@@ -171,6 +171,7 @@ def main():
 
     preproc_config = config.dataset.preprocessing
     dataset_config = config.dataset.params
+    ori_num_vla_image_tokens = config.dataset.preprocessing.num_vla_image_tokens
 
     # for time embedding
     if config.model.showo.add_time_embeds:
@@ -281,7 +282,7 @@ def main():
         sample_eps=config.transport.sample_eps,
         snr_type=config.transport.snr_type,
         do_shift=config.transport.do_shift,
-        seq_len=preproc_config.num_vla_image_tokens,
+        seq_len=ori_num_vla_image_tokens,
     )  # default: velocity;
 
     sampler = Sampler(transport)
