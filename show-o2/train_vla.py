@@ -158,11 +158,15 @@ def main():
     # Initialize Show-o model
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
-                                                         llm_name=path_to_llm_name[config.model.showo.llm_model_path])
+                                                         llm_name=path_to_llm_name[config.model.showo.llm_model_path],
+                                                         add_return_act_token_ids=False)
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     if config.model.showo.load_from_showo:
         model = Showo2Qwen2_5.from_pretrained(config.model.showo.pretrained_model_path, use_safetensors=False).to(accelerator.device)
+        if config.model.showo.llm_vocab_size != model.showo.vocab_size:
+            model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
+            print(f"Resize LLM Vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 

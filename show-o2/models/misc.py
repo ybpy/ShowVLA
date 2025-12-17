@@ -334,7 +334,8 @@ def interpolate_pos_encoding(dim: int, position_embedding: torch.nn.Embedding, h
     return patch_pos_embed
 
 
-def get_text_tokenizer(model_path, add_showo_tokens=True, return_showo_token_ids=False, llm_name="qwen2_5"):
+def get_text_tokenizer(model_path, add_showo_tokens=True, return_showo_token_ids=False, llm_name="qwen2_5",
+                        add_return_act_token_ids=False):
     text_tokenizer = AutoTokenizer.from_pretrained(model_path)
     text_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     if add_showo_tokens:
@@ -352,6 +353,12 @@ def get_text_tokenizer(model_path, add_showo_tokens=True, return_showo_token_ids
             text_tokenizer.add_tokens('<|vid_end|>')
         else:
             raise NotImplementedError
+    
+    if add_return_act_token_ids:
+        assert llm_name == "qwen2_5"
+        text_tokenizer.add_tokens('<|act_start|>')
+        text_tokenizer.add_tokens('<|act_end|>')
+        text_tokenizer.add_tokens('<|act_pad|>')
 
     if return_showo_token_ids:
         if llm_name == "llama3":
@@ -380,6 +387,12 @@ def get_text_tokenizer(model_path, add_showo_tokens=True, return_showo_token_ids
             }
         else:
             raise NotImplementedError
+
+        if add_return_act_token_ids:
+            assert llm_name == "qwen2_5"
+            showo_token_ids["boa_id"] = text_tokenizer.get_vocab()["<|act_start|>"]
+            showo_token_ids["eoa_id"] = text_tokenizer.get_vocab()["<|act_end|>"]
+            showo_token_ids["act_pad_id"] = text_tokenizer.get_vocab()["<|act_pad|>"]
 
         return text_tokenizer, showo_token_ids
 

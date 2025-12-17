@@ -77,6 +77,8 @@ def _freeze_params(model, frozen_params=None):
         for n, p in model.named_parameters():
             for name in frozen_params:
                 if name in n:
+                    if "showo.model.embed_tokens" or "showo.lm_head" in n:
+                        print(f"Freezing {n}!!!")
                     p.requires_grad = False
 
 
