@@ -175,11 +175,7 @@ def main():
     # for time embedding
     if config.model.showo.add_time_embeds:
         # we prepend the time embedding to vision tokens
-        config.dataset.preprocessing.num_mmu_image_tokens += 1
-        config.dataset.preprocessing.num_t2i_image_tokens += 1
-        config.dataset.preprocessing.num_hq_image_tokens += 1
-        config.dataset.preprocessing.num_video_tokens += 1
-        config.dataset.preprocessing.num_mixed_modal_tokens += 1
+        config.dataset.preprocessing.num_vla_image_tokens += 1
 
     ##################################
     #   Optimizer and LR scheduler   #
@@ -203,51 +199,6 @@ def main():
     #################################
     logger.info("Creating dataloaders and lr_scheduler")
 
-    # # DataLoaders creation:
-    # # We use webdataset for data loading. The dataloaders are created with sampling with replacement.
-    # # We don't do dataset resuming here, instead we resample the shards and buffer each time. The sampling is stochastic.
-    # # This means that the dataloading is not deterministic, but it's fast and efficient.
-
-    # def create_dataloader(dataset, batch_size, collate_fn):
-    #     if accelerator.num_processes > 1:
-    #         sampler = DistributedSampler(dataset,
-    #                                      num_replicas=accelerator.num_processes,
-    #                                      rank=accelerator.process_index,
-    #                                      shuffle=True,
-    #                                      drop_last=True,
-    #                                      )
-    #         shuffle = False
-    #     else:
-    #         sampler = None
-    #         shuffle = True
-
-    #     dataloader = DataLoader(dataset, batch_size=batch_size,
-    #                                               sampler=sampler, collate_fn=collate_fn,
-    #                                               shuffle=shuffle, num_workers=dataset_config.num_workers,
-    #                                               drop_last=True)
-    #     return dataloader
-
-    # dataset = VISTDataset(
-    #     dataset_config.train_mixed_modal_shards_path_or_url,
-    #     anno_path=dataset_config.annotation_path,
-    #     text_tokenizer=text_tokenizer,
-    #     image_size=preproc_config.mixed_modal_resolution,
-    #     max_seq_len=preproc_config.max_mixed_modal_seq_length,
-    #     num_image_tokens=preproc_config.num_mixed_modal_tokens,
-    #     latent_width=preproc_config.mixed_modal_latent_width,
-    #     latent_height=preproc_config.mixed_modal_latent_height,
-    #     cond_dropout_prob=config.training.cond_dropout_prob,
-    #     min_res=preproc_config.min_res,
-    #     showo_token_ids=showo_token_ids,
-    #     system=("", "", ""),
-    #     max_num_images=preproc_config.max_num_images,
-    # )
-    # train_dataloader_mixed_modal = create_dataloader(dataset,
-    #                                                  config.training.batch_size_mixed_modal,
-    #                                                  dataset.collate_fn)
-
-    # num_update_steps_per_epoch = len(train_dataloader_mixed_modal)
-    # num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
     
     # Iterable dataloader
     mixed_loader = create_dataloader(
@@ -260,6 +211,8 @@ def main():
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=preproc_config.max_vla_seq_len,
+        image_size=preproc_config.vla_image_size,
+        num_image_tokens=preproc_config.num_vla_image_tokens,
     )
     
     num_train_epochs = 1
@@ -328,7 +281,7 @@ def main():
         sample_eps=config.transport.sample_eps,
         snr_type=config.transport.snr_type,
         do_shift=config.transport.do_shift,
-        seq_len=preproc_config.num_t2i_image_tokens,
+        seq_len=preproc_config.num_vla_image_tokens,
     )  # default: velocity;
 
     sampler = Sampler(transport)
@@ -392,7 +345,7 @@ def main():
     for epoch in range(num_train_epochs):
         model.train()
         for batch in mixed_loader:
-
+            # print(f"batch['language_instruction']: {batch['language_instruction']}")
             text_tokens = batch['text_tokens'].to(accelerator.device)
             # text_labels = batch['text_labels'].to(accelerator.device)
             # b n c h w

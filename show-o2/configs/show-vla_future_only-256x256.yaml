@@ -6,8 +6,8 @@ wandb:
 
 experiment:
     project: "show-vla"
-    name: "show-vla_future_only-432x432_"
-    output_dir: "show-vla_future_only-432x432_"
+    name: "show-vla_future_only-256x256"
+    output_dir: "show-vla_future_only-256x256"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -42,8 +42,8 @@ model:
         add_qk_norm: True
         add_time_embeds: True
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'showo', 'position_embedding' ]
-        frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
-        # frozen_params: null
+        # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
+        frozen_params: null
         params_not_load: null
 
     clip:
@@ -68,9 +68,9 @@ dataset:
         persistent_workers: True
 
     preprocessing:
-        max_vla_seq_len: 1600
-        vla_image_size: 432
-        num_vla_image_tokens: 729
+        max_vla_seq_len: 600
+        vla_image_size: 256
+        num_vla_image_tokens: 256
 
         max_seq_length: 1280
         max_hq_seq_length: 4352
@@ -131,7 +131,7 @@ xvla:
 
 training:
     train_metas_path: /home/hyx/X-VLA/evaluation/libero/meta_py310
-    batch_size_vla: 1
+    batch_size_vla: 2
 
     gradient_accumulation_steps: 16
     batch_size: 1

@@ -66,7 +66,7 @@ class InfiniteDataReader(IterableDataset):
             self.metas[meta["dataset_name"]] = meta
 
         self.image_aug = [
-            transforms.Resize((432, 432*2), interpolation=InterpolationMode.BICUBIC),
+            transforms.Resize((image_size, image_size*2), interpolation=InterpolationMode.BICUBIC),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.) \
                 if training else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),

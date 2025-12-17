@@ -163,7 +163,7 @@ class BaseHDF5Handler(DomainHandler):
         text_labels = [-100] + text_labels + [self.eos_id]
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
 
-        assert len(text_tokens) == len(text_labels) <= self.max_seq_len
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
         text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
