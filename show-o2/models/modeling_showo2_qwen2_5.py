@@ -92,6 +92,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             action_dim=20,
             proprio_dim=20,
             time_dim=32,
+            len_soft_prompts=32,
+            max_len_seq=512,
             num_domains=20,
             **kwargs,
     ):
@@ -134,15 +136,21 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             nn.Linear(hidden_size, hidden_size)
         )
 
-        # action input projection
+
+        self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, hidden_size), requires_grad=True)
+        nn.init.normal_(self.pos_emb, std=0.02)
+
+        self.norm = nn.LayerNorm(hidden_size)
         self.action_encoder = DomainAwareLinear(
             action_dim + proprio_dim + time_dim, hidden_size, num_domains=num_domains
         )
+        self.action_decoder = DomainAwareLinear(hidden_size, action_dim, num_domains=num_domains)
 
-        # action output projection
-        self.action_decoder = DomainAwareLinear(
-            hidden_size, action_dim, num_domains=num_domains
-        )
+        self.len_soft_prompts = len_soft_prompts
+        if len_soft_prompts > 0:
+            self.soft_prompt_hub = nn.Embedding(num_domains, len_soft_prompts * hidden_size)
+            nn.init.normal_(self.soft_prompt_hub.weight, std=0.02)
+        
 
         # adjust for diffusion head
         self.diffusion_head_config = DiffusionHeadConfig()
@@ -159,8 +167,6 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
              range(num_diffusion_layers)]
         )
         self.diffusion_head_b = FinalLayer(self.diffusion_head_config.hidden_size, patch_size, image_latent_dim)
-
-        self.norm = nn.LayerNorm(hidden_size)
 
         # Action loss components (EE6D action space)
         self.action_mse = nn.MSELoss()
@@ -386,6 +392,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             device='cuda:0',
             **kwargs,
     ):
+        B, L = text_tokens.shape
         T = 0
         if image_latents is None:
             # text-only
@@ -490,6 +497,19 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # encode action tokens
                 action_embeds = self.action_encoder(action_tokens, domain_id=domain_id)
 
+                # Add positional embeddings (truncate if needed)
+                num_actions = x.shape[1]
+                if num_actions > self.pos_emb.shape[1]:
+                    raise ValueError(
+                        f"Sequence length {num_actions} exceeds max_len_seq={self.pos_emb.shape[1]}."
+                    )
+                x = x + self.pos_emb[:, :num_actions, :]
+
+                # Append soft prompts
+                if self.len_soft_prompts > 0:
+                    soft_prompts = self.soft_prompt_hub(domain_id).view(B, self.len_soft_prompts, self.config.hidden_size)
+                    x = torch.cat([x, soft_prompts], dim=1)
+
                 for i, action_batch in enumerate(action_positions):
                     for j, (offset, length) in enumerate(action_batch): 
                         input_embeds[i, offset:offset + length] = action_embeds[i * action_positions.size(1) + j, :length]
@@ -514,7 +534,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
                 
                 # action head to predict actions
-                pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
+                pred_actions = self.action_decoder(self.norm(action_embeds_from_output[:, :num_actions]), domain_id=domain_id)
             
 
             # diffusion head to predict vector fields

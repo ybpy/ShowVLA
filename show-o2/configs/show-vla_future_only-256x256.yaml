@@ -100,6 +100,8 @@ optimizer:
         learning_rate_ve: 0.00001
         learning_rate_proj: 0.00002
         learning_rate_showo: 0.00002
+        learning_rate_act: 0.0001
+        learning_rate_soft_prompt: 0.00002
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999

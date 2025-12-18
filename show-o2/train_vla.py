@@ -122,7 +122,6 @@ def main():
             config_exclude_keys=[],
         )
         print(config)
-        print(config)
         wandb_config = {k: v for k, v in flatten_omega_conf(config, resolve=True)}
         wandb_config.pop("experiment.resume_from_checkpoint")
 
@@ -173,6 +172,8 @@ def main():
             action_dim=config.model.showo.get('action_dim', 20),
             proprio_dim=config.model.showo.get('proprio_dim', 20),
             time_dim=config.model.showo.get('time_dim', 32),
+            len_soft_prompts=config.model.showo.get('len_soft_prompts', 32),
+            max_len_seq=config.model.showo.get('max_len_seq', 512),
             num_domains=config.model.showo.get('num_domains', 20),
         ).to(accelerator.device)
         if config.model.showo.llm_vocab_size != model.showo.vocab_size:
@@ -218,6 +219,18 @@ def main():
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_showo
         },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'norm' in n or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_act
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'soft_prompt_hub' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_soft_prompt
+        },
     ]
 
     if optimizer_type == "adamw":
@@ -241,7 +254,7 @@ def main():
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
-        num_actions=config.xvla.num_actions,
+        num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
         action_mode=config.xvla.action_mode,
         training=True,
         text_tokenizer=text_tokenizer,
