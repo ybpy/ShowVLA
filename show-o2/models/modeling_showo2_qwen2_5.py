@@ -89,6 +89,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             add_time_embeds=True,
             add_qk_norm=False,
             clip_pretrained_model_path="google/siglip-so400m-patch14-384",
+            xvla_hidden_size=1024,
             action_dim=20,
             proprio_dim=20,
             time_dim=32,
@@ -136,19 +137,22 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             nn.Linear(hidden_size, hidden_size)
         )
 
+        self.xvla_hidden_size = xvla_hidden_size
+        self.project_xvla_encode = nn.Linear(xvla_hidden_size, hidden_size)
+        self.project_xvla_decode = nn.Linear(hidden_size, xvla_hidden_size)
 
-        self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, hidden_size), requires_grad=True)
+        self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, xvla_hidden_size), requires_grad=True)
         nn.init.normal_(self.pos_emb, std=0.02)
 
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = nn.LayerNorm(xvla_hidden_size)
         self.action_encoder = DomainAwareLinear(
-            action_dim + proprio_dim + time_dim, hidden_size, num_domains=num_domains
+            action_dim + proprio_dim + time_dim, xvla_hidden_size, num_domains=num_domains
         )
-        self.action_decoder = DomainAwareLinear(hidden_size, action_dim, num_domains=num_domains)
+        self.action_decoder = DomainAwareLinear(xvla_hidden_size, action_dim, num_domains=num_domains)
 
         self.len_soft_prompts = len_soft_prompts
         if len_soft_prompts > 0:
-            self.soft_prompt_hub = nn.Embedding(num_domains, len_soft_prompts * hidden_size)
+            self.soft_prompt_hub = nn.Embedding(num_domains, len_soft_prompts * xvla_hidden_size)
             nn.init.normal_(self.soft_prompt_hub.weight, std=0.02)
         
 
@@ -498,17 +502,19 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 action_embeds = self.action_encoder(action_tokens, domain_id=domain_id)
 
                 # Add positional embeddings (truncate if needed)
-                num_actions = x.shape[1]
+                num_actions = action_embeds.shape[1]
                 if num_actions > self.pos_emb.shape[1]:
                     raise ValueError(
                         f"Sequence length {num_actions} exceeds max_len_seq={self.pos_emb.shape[1]}."
                     )
-                x = x + self.pos_emb[:, :num_actions, :]
+                action_embeds = action_embeds + self.pos_emb[:, :num_actions, :]
 
                 # Append soft prompts
                 if self.len_soft_prompts > 0:
-                    soft_prompts = self.soft_prompt_hub(domain_id).view(B, self.len_soft_prompts, self.config.hidden_size)
-                    x = torch.cat([x, soft_prompts], dim=1)
+                    soft_prompts = self.soft_prompt_hub(domain_id).view(B, self.len_soft_prompts, self.xvla_hidden_size)
+                    action_embeds = torch.cat([action_embeds, soft_prompts], dim=1)
+
+                action_embeds = self.project_xvla_encode(action_embeds)
 
                 for i, action_batch in enumerate(action_positions):
                     for j, (offset, length) in enumerate(action_batch): 
@@ -532,9 +538,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     for j, (offset, length) in enumerate(action_batch):
                         action_embeds_list.append(last_hidden_states[i, offset:offset + length])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
-                
+                action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output[:, :num_actions])
                 # action head to predict actions
-                pred_actions = self.action_decoder(self.norm(action_embeds_from_output[:, :num_actions]), domain_id=domain_id)
+                pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
             
 
             # diffusion head to predict vector fields
