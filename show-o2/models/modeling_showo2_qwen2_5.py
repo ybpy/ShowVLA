@@ -377,13 +377,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             action_labels=None,
             modality_positions=None,
             action_positions=None,
+            domain_id=None,
             first_frame_as_cond=False,
             only_denoise_last_image=False,
             guidance_scale=0.0,
             output_hidden_states=True,
             max_seq_len=None,
             device='cuda:0',
-            domain_id=None,
             **kwargs,
     ):
         T = 0

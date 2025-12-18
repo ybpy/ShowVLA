@@ -220,27 +220,6 @@ def main():
         },
     ]
 
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if
-                       (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
-                        and p.requires_grad)],
-            "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_ve,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if ('fusion_proj' in n and p.requires_grad)],
-            "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_proj
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if ((
-                'showo' in n or 'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
-            "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_showo
-        },
-    ]
-
     if optimizer_type == "adamw":
         optimizer = AdamW(
             optimizer_grouped_parameters,
@@ -469,6 +448,7 @@ def main():
                 proprio = batch['proprio'].to(accelerator.device).to(weight_type)
                 action_masks = batch['action_masks'].to(accelerator.device)
                 action_positions = batch['action_positions'].to(accelerator.device)
+                domain_id = batch['domain_id'].to(accelerator.device)
             # prepare image latents and labels
             image_latents, t, image_labels, recons_images, image_masks = prepare_latents_and_labels(pixel_values,
                                                                                                     image_masks,
@@ -506,6 +486,7 @@ def main():
                                                 action_labels=action_labels if pred_act else None,
                                                 modality_positions=modality_positions,
                                                 action_positions=action_positions,
+                                                domain_id=domain_id if pred_act else None,
                                                 output_hidden_states=True,
                                                 max_seq_len=text_tokens.size(1),
                                                 device=accelerator.device,
