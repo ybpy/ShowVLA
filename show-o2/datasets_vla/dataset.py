@@ -49,6 +49,7 @@ class InfiniteDataReader(IterableDataset):
                  max_seq_len: int = 1600,
                  image_size: int = 432,
                  num_image_tokens: int = 729,
+                 pred_act: bool = False
                  ):
         self.num_views = num_views
         self.training = training
@@ -79,6 +80,7 @@ class InfiniteDataReader(IterableDataset):
         self.max_seq_len = max_seq_len
         self.image_size = image_size
         self.num_image_tokens = num_image_tokens
+        self.pred_act = pred_act
 
     def _iter_one_dataset(self, dataset_name: str) -> Iterable[dict]:
         meta = self.metas[dataset_name]
@@ -87,7 +89,8 @@ class InfiniteDataReader(IterableDataset):
         Handler = get_handler_cls(dataset_name)
         handler = Handler(meta=meta, num_views=self.num_views,
             text_tokenizer=self.text_tokenizer, showo_token_ids=self.showo_token_ids,
-            max_seq_len=self.max_seq_len, image_size=self.image_size, num_image_tokens=self.num_image_tokens)
+            max_seq_len=self.max_seq_len, image_size=self.image_size, num_image_tokens=self.num_image_tokens, 
+            num_action_tokens=self.num_actions, pred_act=self.pred_act) 
         
         for traj_idx in traj_indices:
             # try:
@@ -98,7 +101,7 @@ class InfiniteDataReader(IterableDataset):
                 training=self.training,
                 image_aug=self.image_aug,
                 lang_aug_map= meta["lang_aug_map"] if "lang_aug_map" in meta.keys() else None,
-                action_mode = self.action_mode
+                action_mode = self.action_mode,
             ):
                 sample["domain_id"] = torch.tensor(DATA_DOMAIN_ID.get(dataset_name, 0))
                 idx_for_delta = meta.get("idx_for_delta", [])

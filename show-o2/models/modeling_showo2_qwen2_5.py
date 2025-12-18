@@ -26,6 +26,47 @@ from .modules import DiffusionHeadConfig
 from .modules import ModulatedAttentionBlock, RMSNorm, PatchEmbed, TimestepEmbedder, FinalLayer
 from .qwen2 import Qwen2ForCausalLM
 
+class DomainAwareLinear(nn.Module):
+    """
+    Linear layer with domain-conditioned parameters (per-sample).
+
+    Each domain has its own weight and bias vectors, stored in embeddings.
+    """
+
+    def __init__(self, input_size: int, output_size: int, num_domains: int = 20) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.fc = nn.Embedding(num_domains, output_size * input_size)
+        self.bias = nn.Embedding(num_domains, output_size)
+        nn.init.xavier_uniform_(self.fc.weight)
+        nn.init.zeros_(self.bias.weight)
+
+    def forward(self, x: torch.Tensor, domain_id: torch.LongTensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : Tensor
+            [B, I] or [B, T, I]
+        domain_id : LongTensor
+            [B], domain indices.
+
+        Returns
+        -------
+        Tensor
+            [B, O] or [B, T, O]
+        """
+        B = domain_id.shape[0]
+        squeeze_T = False
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+            squeeze_T = True
+        W = self.fc(domain_id).view(B, self.input_size, self.output_size)
+        b = self.bias(domain_id).view(B, self.output_size)
+        y = torch.matmul(x, W) + b.view(B, 1, self.output_size)
+        if squeeze_T:
+            y = y.squeeze(1)
+        return y
 
 class Showo2Qwen2_5(ModelMixin, ConfigMixin):
     _supports_gradient_checkpointing = True
@@ -48,6 +89,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             add_time_embeds=True,
             add_qk_norm=False,
             clip_pretrained_model_path="google/siglip-so400m-patch14-384",
+            action_dim=20,
+            proprio_dim=20,
+            time_dim=32,
+            num_domains=20,
             **kwargs,
     ):
         super().__init__()
@@ -89,6 +134,16 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             nn.Linear(hidden_size, hidden_size)
         )
 
+        # action input projection
+        self.action_encoder = DomainAwareLinear(
+            action_dim + proprio_dim + time_dim, hidden_size, num_domains=num_domains
+        )
+
+        # action output projection
+        self.action_decoder = DomainAwareLinear(
+            hidden_size, action_dim, num_domains=num_domains
+        )
+
         # adjust for diffusion head
         self.diffusion_head_config = DiffusionHeadConfig()
         self.time_embed = TimestepEmbedder(self.diffusion_head_config.hidden_size)
@@ -104,6 +159,20 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
              range(num_diffusion_layers)]
         )
         self.diffusion_head_b = FinalLayer(self.diffusion_head_config.hidden_size, patch_size, image_latent_dim)
+
+        self.norm = nn.LayerNorm(hidden_size)
+
+        # Action loss components (EE6D action space)
+        self.action_mse = nn.MSELoss()
+        self.action_bce = nn.BCEWithLogitsLoss()
+        self.GRIPPER_IDX = (9, 19)
+        self.GRIPPER_SCALE = 1.0
+        self.XYZ_SCALE = 500.0
+        self.ROT_SCALE = 10.0
+        self.POS_IDX_1 = (0, 1, 2)
+        self.POS_IDX_2 = (10, 11, 12)
+        self.ROT_IDX_1 = (3, 4, 5, 6, 7, 8)
+        self.ROT_IDX_2 = (13, 14, 15, 16, 17, 18)
 
         self.reset_parameters()
 
@@ -141,6 +210,47 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         nn.init.constant_(self.diffusion_head_b.adaLN_modulation[-1].bias, 0)
         nn.init.constant_(self.diffusion_head_b.linear.weight, 0)
         nn.init.constant_(self.diffusion_head_b.linear.bias, 0)
+
+    def compute_action_loss(self, pred, target):
+        """
+        Compute action loss for EE6D action space.
+        
+        Parameters
+        ----------
+        pred : Tensor
+            Predicted actions, shape [B, T, action_dim]
+        target : Tensor
+            Target actions, shape [B, T, action_dim]
+        
+        Returns
+        -------
+        dict
+            Dictionary containing position_loss, rotate6D_loss, gripper_loss
+        """
+        assert pred.shape == target.shape, "pred/target shapes must match"
+        B, T, D = pred.shape
+
+        # Gripper BCE loss
+        g_losses = [self.action_bce(pred[:, :, gi], target[:, :, gi]) for gi in self.GRIPPER_IDX]
+        gripper_loss = sum(g_losses) / len(self.GRIPPER_IDX) * self.GRIPPER_SCALE
+
+        # XYZ position loss
+        pos_loss = (
+            self.action_mse(pred[:, :, self.POS_IDX_1], target[:, :, self.POS_IDX_1]) +
+            self.action_mse(pred[:, :, self.POS_IDX_2], target[:, :, self.POS_IDX_2])
+        ) * self.XYZ_SCALE
+
+        # Rotation 6D loss
+        rot_loss = (
+            self.action_mse(pred[:, :, self.ROT_IDX_1], target[:, :, self.ROT_IDX_1]) +
+            self.action_mse(pred[:, :, self.ROT_IDX_2], target[:, :, self.ROT_IDX_2])
+        ) * self.ROT_SCALE
+
+        return {
+            "position_loss": pos_loss,
+            "rotate6D_loss": rot_loss,
+            "gripper_loss": gripper_loss,
+        }
 
     def unpatchify(self, x, h, w, T=0):
         """
@@ -256,19 +366,24 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             self,
             text_tokens=None,
             image_latents=None,
+            action_tokens=None, 
             t=None,
             attention_mask=None,
             text_masks=None,
             image_masks=None,
+            action_masks=None,
             text_labels=None,
             image_labels=None,
+            action_labels=None,
             modality_positions=None,
+            action_positions=None,
             first_frame_as_cond=False,
             only_denoise_last_image=False,
             guidance_scale=0.0,
             output_hidden_states=True,
             max_seq_len=None,
             device='cuda:0',
+            domain_id=None,
             **kwargs,
     ):
         T = 0
@@ -276,7 +391,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             # text-only
             logits = self.showo(input_ids=text_tokens, attention_mask=attention_mask)
             return logits
-        else:
+        elif image_latents is not None:
             # multimoidal understanding and generatiopn
             input_embeds = self.showo.model.embed_tokens(text_tokens)
             dtype = input_embeds.dtype
@@ -370,6 +485,16 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                             new_image_labels[i, offset:offset + length] = image_labels[
                                                                           i * modality_positions.size(1) + j, :length]
 
+
+            if action_tokens is not None:
+                # encode action tokens
+                action_embeds = self.action_encoder(action_tokens, domain_id=domain_id)
+
+                for i, action_batch in enumerate(action_positions):
+                    for j, (offset, length) in enumerate(action_batch): 
+                        input_embeds[i, offset:offset + length] = action_embeds[i * action_positions.size(1) + j, :length]
+
+
             outputs = self.showo(
                 inputs_embeds=input_embeds,
                 attention_mask=attention_mask,
@@ -378,6 +503,19 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             )
 
             logits, last_hidden_states = outputs['logits'], outputs['hidden_states'][-1]
+
+
+            if action_tokens is not None: 
+                # Extract action embeddings from last_hidden_states
+                action_embeds_list = []
+                for i, action_batch in enumerate(action_positions):
+                    for j, (offset, length) in enumerate(action_batch):
+                        action_embeds_list.append(last_hidden_states[i, offset:offset + length])
+                action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
+                
+                # action head to predict actions
+                pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
+            
 
             # diffusion head to predict vector fields
             if hasattr(self, 'diff_proj'):
@@ -392,76 +530,90 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                            )[0]
             v_pred = self.diffusion_head_b(last_hidden_states, time_embeds, modality_positions)
 
-            # [:v_pred.shape[0]] is the valid image labels (special case for interleaved data training)
-            if text_labels is not None and image_labels is not None:
-                loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
-                loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
-                return logits, loss_ntp, loss_flow
+        # [:v_pred.shape[0]] is the valid image labels (special case for interleaved data training)
+        if text_labels is not None and image_labels is not None and action_labels is not None:
+            loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
+            loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
+            action_loss_dict = self.compute_action_loss(pred_actions, action_labels)
+            return logits, loss_ntp, loss_flow, action_loss_dict
+        
+        elif text_labels is not None and image_labels is not None and action_labels is None:
+            loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
+            loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
+            return logits, loss_ntp, loss_flow, None
+        
+        elif text_labels is not None and image_labels is None and action_labels is None:
+            loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
+            return logits, loss_ntp, None, None
 
-            elif image_labels is not None:
-                loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
-                return logits, loss_flow
+        elif text_labels is None and image_labels is not None and action_labels is not None:
+            loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
+            action_loss_dict = self.compute_action_loss(pred_actions, action_labels)
+            return logits, None, loss_flow, action_loss_dict
+        
+        elif text_labels is None and image_labels is not None and action_labels is None:
+            loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
+            return logits, None, loss_flow, None
 
-            elif text_labels is not None:
-                loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
-                return logits, loss_ntp
-
-            else:
-                v_pred_ = []
-                num_imgs = 0
-                for i, modality_batch in enumerate(modality_positions):
-                    for j, (offset, length) in enumerate(modality_batch):
-                        if length == 0:
-                            break
-                        else:
-                            v_pred_.append(v_pred[i, offset:offset + length])
-                            num_imgs += 1
-                v_pred_ = torch.stack(v_pred_)
-
-                # remove the time embedding
-                if self.config.add_time_embeds:
-                    v_pred_ = v_pred_[:, 1:, :]
-
-                # unpatchify
-                v_pred_ = self.unpatchify(v_pred_, h_, w_, T=T)
-
-                if T == 0:
-                    v_pred_ = rearrange(v_pred_, 'i j k -> i k j')
-                    v_pred_ = v_pred_.reshape(num_imgs, c, h, w)
-                else:
-                    v_pred_ = rearrange(v_pred_, 'b t l c -> b c t l')
-                    v_pred_ = v_pred_.reshape(num_imgs, c, T, h, w)
-
-                # specific for image-to-video generation
-                if first_frame_as_cond:
-                    # zero the v-prediction for the first frame
-                    v_pred_ = torch.cat([
-                        torch.zeros_like(v_pred_)[:, :, :1],
-                        v_pred_[:, :, 1:]
-                    ], dim=2)
-
-                # specific for mixed-modality generation
-                if only_denoise_last_image:
-                    if guidance_scale > 0:
-                        v_pred_cond, v_pred_uncond = torch.chunk(v_pred_, 2)
-
-                        v_pred_cond = torch.cat([
-                            torch.zeros_like(v_pred_cond)[:-1, :, :],
-                            v_pred_cond[-1:, :, :]
-                        ], dim=0)
-
-                        v_pred_uncond = torch.cat([
-                            torch.zeros_like(v_pred_uncond)[:-1, :, :],
-                            v_pred_uncond[-1:, :, :]
-                        ], dim=0)
-
-                        v_pred_ = torch.cat([v_pred_cond, v_pred_uncond], dim=0)
+        else:
+            v_pred_ = []
+            num_imgs = 0
+            for i, modality_batch in enumerate(modality_positions):
+                for j, (offset, length) in enumerate(modality_batch):
+                    if length == 0:
+                        break
                     else:
-                        v_pred_ = torch.cat([
-                            torch.zeros_like(v_pred_)[:-1, :, :],
-                            v_pred_[-1:, :, :]
-                        ], dim=0)
+                        v_pred_.append(v_pred[i, offset:offset + length])
+                        num_imgs += 1
+            v_pred_ = torch.stack(v_pred_)
 
+            # remove the time embedding
+            if self.config.add_time_embeds:
+                v_pred_ = v_pred_[:, 1:, :]
+
+            # unpatchify
+            v_pred_ = self.unpatchify(v_pred_, h_, w_, T=T)
+
+            if T == 0:
+                v_pred_ = rearrange(v_pred_, 'i j k -> i k j')
+                v_pred_ = v_pred_.reshape(num_imgs, c, h, w)
+            else:
+                v_pred_ = rearrange(v_pred_, 'b t l c -> b c t l')
+                v_pred_ = v_pred_.reshape(num_imgs, c, T, h, w)
+
+            # specific for image-to-video generation
+            if first_frame_as_cond:
+                # zero the v-prediction for the first frame
+                v_pred_ = torch.cat([
+                    torch.zeros_like(v_pred_)[:, :, :1],
+                    v_pred_[:, :, 1:]
+                ], dim=2)
+
+            # specific for mixed-modality generation
+            if only_denoise_last_image:
+                if guidance_scale > 0:
+                    v_pred_cond, v_pred_uncond = torch.chunk(v_pred_, 2)
+
+                    v_pred_cond = torch.cat([
+                        torch.zeros_like(v_pred_cond)[:-1, :, :],
+                        v_pred_cond[-1:, :, :]
+                    ], dim=0)
+
+                    v_pred_uncond = torch.cat([
+                        torch.zeros_like(v_pred_uncond)[:-1, :, :],
+                        v_pred_uncond[-1:, :, :]
+                    ], dim=0)
+
+                    v_pred_ = torch.cat([v_pred_cond, v_pred_uncond], dim=0)
+                else:
+                    v_pred_ = torch.cat([
+                        torch.zeros_like(v_pred_)[:-1, :, :],
+                        v_pred_[-1:, :, :]
+                    ], dim=0)
+
+            if action_tokens is not None:
+                return logits, v_pred_, pred_actions
+            else:
                 return logits, v_pred_
 
     @torch.no_grad()

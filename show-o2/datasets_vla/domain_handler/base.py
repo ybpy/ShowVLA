@@ -45,7 +45,10 @@ class DomainHandler(ABC):
             showo_token_ids,
             max_seq_len: int = 2048,
             image_size: int = 432,
-            num_image_tokens: int = 729) -> None:
+            num_image_tokens: int = 729,
+            num_action_tokens: int = 30,
+            pred_act: bool = False
+            ) -> None:
         
         self.meta = meta
         self.num_views = num_views
@@ -57,9 +60,14 @@ class DomainHandler(ABC):
         self.boi_id = showo_token_ids['boi_id']
         self.eoi_id = showo_token_ids['eoi_id']
         self.img_pad_id = showo_token_ids['img_pad_id']
+        self.boa_id = showo_token_ids['boa_id'] 
+        self.eoa_id = showo_token_ids['eoa_id'] 
+        self.act_pad_id = showo_token_ids['act_pad_id'] 
         self.max_seq_len = max_seq_len
         self.image_size = image_size
         self.num_image_tokens = num_image_tokens
+        self.num_action_tokens = num_action_tokens
+        self.pred_act = pred_act
 
     @abstractmethod
     def iter_episode(
@@ -177,6 +185,74 @@ class BaseHDF5Handler(DomainHandler):
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
 
         return text_tokens, text_labels, modality_positions, text_mask, image_mask
+    
+    def format_obs_text_future_action_seq(self, text: str, suffix=" Future image:", act_cmd="Future action:"): 
+        text_tokens = []
+        text_labels = []
+        modality_positions = []
+        action_positions = []
+
+        cur_len = 1 # bos token
+        
+        # One observation image
+        text_tokens.extend([self.boi_id] + [self.img_pad_id] * self.num_image_tokens + [self.eoi_id])
+        # +1 for one <|img_start|> token
+        modality_positions.append((cur_len + 1, self.num_image_tokens))
+        cur_len = cur_len + 1 + self.num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
+        
+        # Language commmand
+        if text.endswith('.'):
+            text = text + suffix
+        elif text[-1].isalpha():
+            text = text + '.' + suffix
+        else:
+            raise ValueError(f"Unsupported Language Instruction: {text}")
+        
+        lang_tokens = self.text_tokenizer(text, add_special_tokens=False, truncation=False).input_ids
+        text_tokens.extend(lang_tokens)
+        cur_len += len(lang_tokens)
+
+        text_labels = [-100 for _ in range(len(text_tokens))]
+
+        # One future image
+        text_tokens.extend([self.boi_id] + [self.img_pad_id] * self.num_image_tokens + [self.eoi_id])
+        text_labels.extend([self.boi_id] + [self.img_pad_id] * self.num_image_tokens + [self.eoi_id])
+        # +1 for one <|img_start|> token
+        modality_positions.append((cur_len + 1, self.num_image_tokens))
+        cur_len = cur_len + 1 + self.num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
+
+        # # Action prediction command
+        # act_cmd_tokens = self.text_tokenizer(act_cmd, add_special_tokens=False, truncation=False).input_ids 
+        # text_tokens.extend(act_cmd_tokens) 
+        # cur_len += len(act_cmd_tokens) 
+        # text_labels.extend([-100 for _ in range(len(act_cmd_tokens))]) 
+
+        # Future action sequence to predict 
+        text_tokens.extend([self.boa_id] + [self.act_pad_id] * self.num_action_tokens + [self.eoa_id]) 
+        text_labels.extend([self.boa_id] + [self.act_pad_id] * self.num_action_tokens + [self.eoa_id]) 
+        action_positions.append((cur_len + 1, self.num_action_tokens)) 
+        cur_len = cur_len + 1 + self.num_action_tokens + 1  # +2 to include <|act_start|> and <|act_end|>
+
+        text_labels = [-100] + text_labels + [self.eos_id]
+        text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
+
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
+        text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
+        text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
+        text_tokens = torch.tensor(text_tokens)
+        text_labels = torch.tensor(text_labels)
+
+        modality_positions = torch.tensor(modality_positions)
+        action_positions = torch.tensor(action_positions)
+
+        text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.act_pad_id) & (text_tokens != self.pad_id),
+                                torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
+        image_mask = torch.where(text_tokens == self.img_pad_id,
+                                torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
+        action_mask = torch.where(text_tokens == self.act_pad_id,
+                                torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
+
+        return text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask
 
     def iter_episode(
         self,
@@ -257,9 +333,23 @@ class BaseHDF5Handler(DomainHandler):
             image = torch.stack(imgs + future_imgs, dim=0)  # [2, C, H, W]
             # print(f"tgt image.shape: {image.shape}", flush=True)
 
-            text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins)
-
-            yield {
+            if self.pred_act:
+                text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask = self.format_obs_text_future_action_seq(ins)
+                yield {
+                "language_instruction": ins,
+                "abs_trajectory": torch.cat([lseq, rseq], -1).float(),
+                'text_tokens': text_tokens,
+                'text_labels': text_labels,
+                'images': image,
+                'modality_positions': modality_positions,
+                'action_positions': action_positions,
+                'text_masks': text_mask,
+                'image_masks': image_mask,
+                'action_masks': action_mask,
+                }
+            else: 
+                text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins)
+                yield {
                 "language_instruction": ins,
                 "abs_trajectory": torch.cat([lseq, rseq], -1).float(),
                 'text_tokens': text_tokens,
@@ -268,4 +358,4 @@ class BaseHDF5Handler(DomainHandler):
                 'modality_positions': modality_positions,
                 'text_masks': text_mask,
                 'image_masks': image_mask,
-            }
+                }

@@ -47,12 +47,14 @@ def create_dataloader(
     max_seq_len,
     image_size,
     num_image_tokens,
+    pred_act: bool = False
 ):
 
     return DataLoader(
         InfiniteDataReader(metas_path, num_actions=num_actions, training=training, action_mode=action_mode,
             text_tokenizer=text_tokenizer, showo_token_ids=showo_token_ids, max_seq_len=max_seq_len,
-            image_size=image_size, num_image_tokens=num_image_tokens),
+            image_size=image_size, num_image_tokens=num_image_tokens,
+            pred_act=pred_act), 
         batch_size=batch_size,
         collate_fn=collate_fn,
         num_workers=num_workers,

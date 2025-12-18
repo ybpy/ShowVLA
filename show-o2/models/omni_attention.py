@@ -53,12 +53,18 @@ def omni_attn_mask(modalities):
     return mask_mod
 
 
-def omni_attn_mask_naive(B, LEN, modalities, device, inverted=True):
+def omni_attn_mask_naive(B, LEN, modalities, device, inverted=True, actions=None):
     attention_mask = torch.tril(torch.ones((B, 1, LEN, LEN), dtype=torch.long)).to(device)
     for b in range(B):
         modality_batch = modalities[b]
         for offset, length in modality_batch:
             attention_mask[b, :, offset:offset + length, offset:offset + length] = 1
+
+    if actions is not None:
+        for b in range(B): 
+            action_batch = actions[b] 
+            for offset, length in action_batch: 
+                attention_mask[b, :, offset:offset + length, offset:offset + length] = 1
 
     if inverted:
         inverted_attention_mask = 1 - attention_mask

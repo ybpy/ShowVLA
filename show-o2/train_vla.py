@@ -122,6 +122,7 @@ def main():
             config_exclude_keys=[],
         )
         print(config)
+        print(config)
         wandb_config = {k: v for k, v in flatten_omega_conf(config, resolve=True)}
         wandb_config.pop("experiment.resume_from_checkpoint")
 
@@ -157,14 +158,23 @@ def main():
         raise NotImplementedError
 
     # Initialize Show-o model
+    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
-                                                         add_return_act_token_ids=False)
+                                                         add_return_act_token_ids=pred_act)
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     if config.model.showo.load_from_showo:
-        model = Showo2Qwen2_5.from_pretrained(config.model.showo.pretrained_model_path, use_safetensors=False).to(accelerator.device)
+        # Load pretrained model and override action-related parameters from config
+        model = Showo2Qwen2_5.from_pretrained(
+            config.model.showo.pretrained_model_path, 
+            use_safetensors=False,
+            action_dim=config.model.showo.get('action_dim', 20),
+            proprio_dim=config.model.showo.get('proprio_dim', 20),
+            time_dim=config.model.showo.get('time_dim', 32),
+            num_domains=config.model.showo.get('num_domains', 20),
+        ).to(accelerator.device)
         if config.model.showo.llm_vocab_size != model.showo.vocab_size:
             model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
             print(f"Resize LLM Vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
@@ -188,6 +198,27 @@ def main():
     #################################
     optimizer_config = config.optimizer.params
     optimizer_type = config.optimizer.name
+
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if
+                       (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
+                        and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_ve,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ('fusion_proj' in n and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_proj
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'showo' in n or 'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_showo
+        },
+    ]
 
     optimizer_grouped_parameters = [
         {
@@ -275,6 +306,8 @@ def main():
             model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
             del state_dict
 
+    config.lr_scheduler.params.warmup_steps = int(
+        config.training.max_train_steps * config.lr_scheduler.params.warmup_ratio)
     config.lr_scheduler.params.warmup_steps = int(
         config.training.max_train_steps * config.lr_scheduler.params.warmup_ratio)
 
@@ -365,6 +398,55 @@ def main():
         t = t.reshape(b * n)
 
         return xt, t, ut, recons_images, masks
+    
+    @torch.no_grad() 
+    def prepare_action_tokens_and_labels(
+            actions,
+            proprio,
+            time_dim=32,
+    ):
+        action_labels = actions.clone()
+        B = actions.shape[0] 
+        t = (torch.rand(1, device=actions.device) + torch.arange(B, device=actions.device) / B) % (1 - 1e-5)
+
+        noisy_actions = torch.randn_like(actions) * t.view(-1, 1, 1) + actions * (1 - t).view(-1, 1, 1)
+
+        def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
+            """
+            Create sinusoidal timestep embeddings.
+
+            Parameters
+            ----------
+            t : torch.Tensor
+                Shape [B]. Each element is a timestep index, may be fractional.
+            dim : int
+                Dimensionality of the output embedding.
+            max_period : int, default=100
+                Controls the minimum frequency of the sinusoids.
+
+            Returns
+            -------
+            torch.Tensor
+                Shape [B, dim]. Sinusoidal embeddings.
+            """
+            half = dim // 2
+            freqs = torch.exp(
+                -math.log(max_period)
+                * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
+                / half
+            )
+            args = t[:, None] * freqs[None]
+            embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+            if dim % 2 == 1:
+                embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            return embedding
+
+        time_emb = timestep_embedding(t)
+        time_tokens = time_emb.unsqueeze(1).expand(B, actions.shape[1], time_emb.shape[-1])
+        proprio_tokens = proprio.unsqueeze(1).expand(B, actions.shape[1], proprio.shape[-1])
+        action_tokens = torch.cat([noisy_actions, proprio_tokens, time_tokens], dim=-1)
+
+        return action_tokens, action_labels
 
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
@@ -382,10 +464,21 @@ def main():
             text_masks = batch['text_masks'].to(accelerator.device)
             image_masks = batch['image_masks'].to(accelerator.device)
             modality_positions = batch['modality_positions'].to(accelerator.device)
+            if pred_act:
+                action = batch['action'].to(accelerator.device).to(weight_type)
+                proprio = batch['proprio'].to(accelerator.device).to(weight_type)
+                action_masks = batch['action_masks'].to(accelerator.device)
+                action_positions = batch['action_positions'].to(accelerator.device)
             # prepare image latents and labels
             image_latents, t, image_labels, recons_images, image_masks = prepare_latents_and_labels(pixel_values,
                                                                                                     image_masks,
                                                                                                     modality_positions)
+            if pred_act: 
+                action_tokens, action_labels = prepare_action_tokens_and_labels(
+                    action,
+                    proprio,
+                    config.model.showo.time_dim,
+                )
             # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
             # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
             # omni_mask_fn = omni_attn_mask(modality_positions)
@@ -396,17 +489,23 @@ def main():
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                               text_tokens.size(1),
                                               modality_positions,
-                                              accelerator.device).to(weight_type)
+                                              accelerator.device,
+                                              actions=action_positions if pred_act else None,
+                                              ).to(weight_type)
 
-            logits, loss_flow = model(text_tokens=text_tokens,
+            logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
+                                                action_tokens=action_tokens if pred_act else None,
                                                 t=t.to(weight_type),
                                                 attention_mask=block_mask,
                                                 text_masks=text_masks,
                                                 image_masks=image_masks,
+                                                # action_masks=action_masks,
                                                 # text_labels=text_labels,
                                                 image_labels=image_labels,
+                                                action_labels=action_labels if pred_act else None,
                                                 modality_positions=modality_positions,
+                                                action_positions=action_positions,
                                                 output_hidden_states=True,
                                                 max_seq_len=text_tokens.size(1),
                                                 device=accelerator.device,
@@ -416,7 +515,13 @@ def main():
             # avg_loss_ntp = accelerator.gather(loss_ntp.repeat(total_batch_size_per_gpu)).mean()
             avg_loss_flow = accelerator.gather(loss_flow.repeat(total_batch_size_per_gpu)).mean()
             # loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow
-            loss = config.training.flow_coeff * loss_flow
+            if pred_act:
+                loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * sum(action_loss_dict.values())
+            else:
+                loss = config.training.flow_coeff * loss_flow
+
+
+            
 
             accelerator.backward(loss.to(weight_type) / config.training.gradient_accumulation_steps)
 
@@ -518,6 +623,7 @@ def main():
         model.save_pretrained(config.experiment.output_dir, safe_serialization=False)
 
     accelerator.end_training()
+
 
 
 
