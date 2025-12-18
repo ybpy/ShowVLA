@@ -121,6 +121,7 @@ def main():
             entity=config.wandb.get("entity", None),
             config_exclude_keys=[],
         )
+        print(config)
         wandb_config = {k: v for k, v in flatten_omega_conf(config, resolve=True)}
         wandb_config.pop("experiment.resume_from_checkpoint")
 
@@ -188,10 +189,30 @@ def main():
     optimizer_config = config.optimizer.params
     optimizer_type = config.optimizer.name
 
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if
+                       (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
+                        and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_ve,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ('fusion_proj' in n and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_proj
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'showo' in n or 'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_showo
+        },
+    ]
+
     if optimizer_type == "adamw":
         optimizer = AdamW(
-            model.parameters(),
-            lr=optimizer_config.learning_rate,
+            optimizer_grouped_parameters,
             betas=(optimizer_config.beta1, optimizer_config.beta2),
             weight_decay=optimizer_config.weight_decay,
             eps=optimizer_config.epsilon,
@@ -254,6 +275,8 @@ def main():
             model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
             del state_dict
 
+    config.lr_scheduler.params.warmup_steps = int(
+        config.training.max_train_steps * config.lr_scheduler.params.warmup_ratio)
 
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
@@ -496,239 +519,6 @@ def main():
 
     accelerator.end_training()
 
-
-@torch.no_grad()
-def generate_images(
-        model,
-        vae_model,
-        text_tokenizer,
-        config,
-        global_step,
-        device,
-        weight_type,
-        sampler,
-        showo_token_ids,
-):
-    logger.info("Generating images...")
-    model.eval()
-
-    # read validation prompts from file
-    with open(config.dataset.params.validation_prompts_file, "r") as f:
-        prompts = f.read().splitlines()[:config.training.batch_size_t2i]
-
-    num_t2i_image_tokens, num_mmu_image_tokens, num_video_tokens, max_seq_len, max_text_len, image_latent_dim, patch_size, latent_width, \
-    latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
-        = get_hyper_params(config, text_tokenizer, showo_token_ids)
-
-    batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null = \
-        prepare_gen_input(
-            prompts, text_tokenizer, num_t2i_image_tokens, bos_id, eos_id, boi_id, eoi_id, pad_id, image_pad_id,
-            max_text_len, device
-        )
-
-    z = torch.randn((len(prompts),
-                     image_latent_dim, latent_height * patch_size,
-                     latent_width * patch_size)).to(weight_type).to(device)
-
-    if guidance_scale > 0:
-        z = torch.cat([z, z], dim=0)
-        text_tokens = torch.cat([batch_text_tokens, batch_text_tokens_null], dim=0)
-        modality_positions = torch.cat([batch_modality_positions, batch_modality_positions_null], dim=0)
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        # or use naive omni attention mask, which is more stable
-        block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                          max_seq_len,
-                                          modality_positions,
-                                          device).to(weight_type)
-    else:
-        text_tokens = batch_text_tokens
-        modality_positions = batch_modality_positions
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                          max_seq_len,
-                                          modality_positions,
-                                          device).to(weight_type)
-
-    model_kwargs = dict(
-        text_tokens=torch.cat([batch_text_tokens, batch_text_tokens_null], dim=0),
-        attention_mask=block_mask,
-        modality_positions=torch.cat([batch_modality_positions,
-                                      batch_modality_positions_null], dim=0),
-        output_hidden_states=True,
-        max_seq_len=max_seq_len,
-        guidance_scale=guidance_scale
-    )
-
-    sample_fn = sampler.sample_ode(
-        sampling_method=config.transport.sampling_method,
-        num_steps=config.transport.num_inference_steps,
-        atol=config.transport.atol,
-        rtol=config.transport.rtol,
-        reverse=config.transport.reverse,
-        time_shifting_factor=config.transport.time_shifting_factor
-    )
-    samples = sample_fn(z, model.t2i_generate, **model_kwargs)[-1]
-    samples = torch.chunk(samples, 2)[0]
-
-    if config.model.vae_model.type == 'wan21':
-        samples = samples.unsqueeze(2)
-        images = vae_model.batch_decode(samples)
-        images = images.squeeze(2)
-    else:
-        raise NotImplementedError
-
-    model.train()
-
-    # Convert to PIL images
-    images = denorm(images)
-    pil_images = [Image.fromarray(image) for image in images]
-
-    # Log images
-    wandb_images = [wandb.Image(image, caption=prompts[i]) for i, image in enumerate(pil_images)]
-    wandb.log({"Generated images": wandb_images}, step=global_step)
-
-
-@torch.no_grad()
-def visualize_reconstruction(
-        pixel_values,
-        recons_images,
-        captions,
-        global_step
-):
-    logger.info("Visualizing images...")
-
-    # Convert to PIL images
-    images = denorm(pixel_values)
-    recons_images = denorm(recons_images)
-    visualized_images = np.concatenate((images, recons_images), 2)
-    pil_images = [Image.fromarray(image) for image in visualized_images]
-
-    # Log images
-    wandb_images = [wandb.Image(image, caption=captions[i]) for i, image in enumerate(pil_images)]
-    wandb.log({"Original images vs. Reconstructed": wandb_images}, step=global_step)
-
-
-@torch.no_grad()
-def generate_videos(
-        model,
-        vae_model,
-        text_tokenizer,
-        config,
-        global_step,
-        device,
-        weight_type,
-        sampler,
-        showo_token_ids
-):
-    logger.info("Generating videos...")
-    model.eval()
-
-    # read validation prompts from file
-    with open(config.dataset.params.validation_prompts_file, "r") as f:
-        prompts = f.read().splitlines()[:config.training.batch_size_t2i]
-
-    num_image_tokens, num_video_tokens, max_seq_len, max_text_len, image_latent_dim, patch_size, latent_width, \
-    latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
-        = get_hyper_params(config, text_tokenizer, showo_token_ids, is_video=True)
-
-    batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null = \
-        prepare_gen_input(
-            prompts, text_tokenizer, num_video_tokens, bos_id, eos_id, bov_id, eov_id, pad_id, video_pad_id,
-            max_text_len, device
-        )
-
-    T = 5
-    z = torch.randn((len(prompts), image_latent_dim, T, latent_height * patch_size, latent_width * patch_size)).to(
-        device).to(weight_type)
-
-    if guidance_scale > 0:
-        z = torch.cat([z, z], dim=0)
-        text_tokens = torch.cat([batch_text_tokens, batch_text_tokens_null], dim=0)
-        modality_positions = torch.cat([batch_modality_positions, batch_modality_positions_null], dim=0)
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        # or use naive omni attention mask, which is more stable
-        block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                          max_seq_len,
-                                          modality_positions,
-                                          device).to(weight_type)
-    else:
-        text_tokens = batch_text_tokens
-        modality_positions = batch_modality_positions
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                          max_seq_len,
-                                          modality_positions,
-                                          device).to(weight_type)
-
-    model_kwargs = dict(
-        text_tokens=text_tokens,
-        attention_mask=block_mask,
-        modality_positions=modality_positions,
-        output_hidden_states=True,
-        max_seq_len=max_seq_len,
-        guidance_scale=guidance_scale
-    )
-
-    sample_fn = sampler.sample_ode(
-        sampling_method=config.transport.sampling_method,
-        num_steps=config.transport.num_inference_steps,
-        atol=config.transport.atol,
-        rtol=config.transport.rtol,
-        reverse=config.transport.reverse,
-        time_shifting_factor=config.transport.time_shifting_factor
-    )
-    samples = sample_fn(z, model.t2i_generate, **model_kwargs)[-1]
-    samples = torch.chunk(samples, 2)[0]
-
-    if config.model.vae_model.type == 'wan21':
-        images = vae_model.batch_decode(samples)
-    else:
-        raise NotImplementedError
-
-    model.train()
-
-    # Convert to PIL images
-    images = denorm_vid(images)
-
-    # Log images
-    wandb_images = [wandb.Video(image, caption=prompts[i], fps=8, format="mp4") for i, image in enumerate(images)]
-    wandb.log({"Generated videos": wandb_images}, step=global_step)
-
-
-@torch.no_grad()
-def visualize_reconstruction_video(
-        pixel_values,
-        recons_images,
-        captions,
-        global_step
-):
-    logger.info("Visualizing videos...")
-
-    # Convert to PIL images
-    images = denorm_vid(pixel_values)
-    recons_images = denorm_vid(recons_images)
-    visualized_images = np.concatenate((images, recons_images), 4)
-
-    # Log images
-    wandb_images = [wandb.Video(image, caption=captions[i], fps=8, format="mp4") for i, image in
-                    enumerate(visualized_images)]
-    wandb.log({"Original videos vs. Reconstructed": wandb_images}, step=global_step)
 
 
 def save_checkpoint(model, config, accelerator, global_step):

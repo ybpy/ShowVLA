@@ -5,9 +5,9 @@ wandb:
 # 410k -- 512 res mixedmodal
 
 experiment:
-    project: "show-vla"
-    name: "show-vla_future_only-256x256"
-    output_dir: "show-vla_future_only-256x256"
+    project: "show-vla_future_only"
+    name: "show-vla_future_only-256x256_lr"
+    output_dir: "show-vla_future_only-256x256_lr"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -96,7 +96,9 @@ dataset:
 optimizer:
     name: adamw
     params: # default adamw params
-        learning_rate: 0.0001
+        learning_rate_ve: 0.00001
+        learning_rate_proj: 0.00002
+        learning_rate_showo: 0.00002
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -106,8 +108,8 @@ optimizer:
 lr_scheduler:
     scheduler: "constant_with_warmup"
     params:
-        learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 0
+        warmup_steps: null # will be calculated in the training code
+        warmup_ratio: 0.0
 
 transport:
     path_type: "Linear"
