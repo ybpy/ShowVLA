@@ -39,7 +39,7 @@ class InfiniteDataReader(IterableDataset):
     """
     def __init__(self, 
                  metas_path: str, 
-                 num_actions: int = 10, 
+                 num_actions: int = 30, 
                  num_views: int = 1, 
                  training: bool = True,
                  action_mode: str = "ee6d",
@@ -70,7 +70,7 @@ class InfiniteDataReader(IterableDataset):
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.) \
                 if training else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace=True),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
         ]
         self.image_aug = transforms.Compose(self.image_aug)
 
