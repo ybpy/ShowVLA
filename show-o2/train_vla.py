@@ -231,6 +231,12 @@ def main():
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_soft_prompt
         },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'project_xvla' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_project_xvla
+        },
     ]
 
     if optimizer_type == "adamw":
