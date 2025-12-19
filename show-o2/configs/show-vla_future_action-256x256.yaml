@@ -54,6 +54,16 @@ model:
         max_len_seq: 512
         num_domains: 20
 
+        xvla_ckpt_path: "2toINF/X-VLA-Pt"
+        source_prefix: "transformer"
+        target_prefix: null
+        xvla_modules_to_load:
+            - action_encoder
+            - action_decoder
+            - norm
+            - pos_emb
+            - soft_prompt_hub
+
     clip:
         pretrained_model_path: "google/siglip-so400m-patch14-384"
 

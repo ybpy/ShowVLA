@@ -254,3 +254,119 @@ def load_video(video_path, max_frames_num, fps, force_sample=False):
     spare_frames = [Image.fromarray(item) for item in vr.get_batch(frame_idx).asnumpy()]
 
     return spare_frames, frame_time, video_time
+
+def load_xvla_modules(
+    logger,
+    model, 
+    xvla_checkpoint_path, 
+    module_names=['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub'],
+    source_prefix='transformer',
+    target_prefix=None,
+):
+    """
+    Load XVLA modules from local path or HuggingFace Hub.
+    
+    Args:
+        model: Showo2Qwen2_5
+        xvla_checkpoint_path: Local file path or HuggingFace model ID (e.g., "username/model-name")
+        module_names: List of module names to load
+        source_prefix: transformer(XVLA prefix)
+        target_prefix: Showo2 prefix
+    
+    Returns:
+        bool: success
+    """
+    logger.info(f"Loading XVLA modules from {xvla_checkpoint_path}")
+    
+    # Detect if it's a HuggingFace model ID (contains '/' and not a local path)
+    is_hf_model = '/' in xvla_checkpoint_path and not os.path.exists(xvla_checkpoint_path)
+    
+    if is_hf_model:
+        logger.info(f"Detected HuggingFace model ID: {xvla_checkpoint_path}")
+        from huggingface_hub import hf_hub_download, snapshot_download
+        
+        # Try to download the model files from HuggingFace Hub
+        try:
+            # First, try to find safetensors file
+            try:
+                checkpoint_file = hf_hub_download(
+                    repo_id=xvla_checkpoint_path,
+                    filename="model.safetensors",
+                )
+                logger.info(f"Downloaded model.safetensors from HuggingFace Hub")
+            except:
+                # Fall back to pytorch_model.bin
+                try:
+                    checkpoint_file = hf_hub_download(
+                        repo_id=xvla_checkpoint_path,
+                        filename="pytorch_model.bin",
+                    )
+                    logger.info(f"Downloaded pytorch_model.bin from HuggingFace Hub")
+                except:
+                    # Try to download entire repo and look for checkpoint files
+                    cache_dir = snapshot_download(repo_id=xvla_checkpoint_path)
+                    logger.info(f"Downloaded full model repo to {cache_dir}")
+                    
+                    # Look for checkpoint files in the downloaded directory
+                    if os.path.exists(os.path.join(cache_dir, "model.safetensors")):
+                        checkpoint_file = os.path.join(cache_dir, "model.safetensors")
+                    elif os.path.exists(os.path.join(cache_dir, "pytorch_model.bin")):
+                        checkpoint_file = os.path.join(cache_dir, "pytorch_model.bin")
+                    else:
+                        raise FileNotFoundError(
+                            f"Could not find model.safetensors or pytorch_model.bin in {xvla_checkpoint_path}"
+                        )
+        except Exception as e:
+            logger.error(f"Failed to download from HuggingFace Hub: {e}")
+            return False
+    else:
+        # Local file path
+        checkpoint_file = xvla_checkpoint_path
+        if not os.path.exists(checkpoint_file):
+            logger.error(f"Local checkpoint file not found: {checkpoint_file}")
+            return False
+    
+    # Load the checkpoint
+    if checkpoint_file.endswith('.safetensors'):
+        from safetensors.torch import load_file
+        xvla_state_dict = load_file(checkpoint_file)
+        logger.info(f"Loaded state_dict from safetensors file")
+    else:
+        xvla_state_dict = torch.load(checkpoint_file, map_location="cpu")
+        logger.info(f"Loaded state_dict from pytorch file")
+    
+    filtered_state_dict = {}
+    for key, value in xvla_state_dict.items():
+        should_load = any(module_name in key for module_name in module_names)
+        if not should_load:
+            continue
+        
+        # remove source_suffix
+        new_key = key
+        if source_prefix and key.startswith(f"{source_prefix}."):
+            new_key = key[len(source_prefix) + 1:]  # +1 for the dot
+        
+        # add target_prefix
+        if target_prefix:
+            new_key = f"{target_prefix}.{new_key}"
+        
+        filtered_state_dict[new_key] = value
+        logger.info(f"Mapping: {key} -> {new_key} (shape: {list(value.shape)})")
+    
+    if not filtered_state_dict:
+        logger.warning(f"No matching parameters found for modules: {module_names}")
+        logger.warning(f"Available keys in XVLA checkpoint (first 10):")
+        for i, k in enumerate(list(xvla_state_dict.keys())[:10]):
+            logger.warning(f"{i+1}. {k}")
+        return False
+    
+    missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+    actual_missing = [k for k in missing_keys if any(m in k for m in module_names)]
+    
+    logger.info(f"Successfully loaded {len(filtered_state_dict)} parameters from XVLA")
+    if actual_missing:
+        logger.warning(f"Missing keys in model (expected from XVLA): {actual_missing}")
+    if unexpected_keys:
+        logger.warning(f"Unexpected keys (not in model): {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"⚠️  Unexpected keys: {unexpected_keys}")
+    
+    return len(filtered_state_dict) > 0

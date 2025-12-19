@@ -47,12 +47,11 @@ if torch.cuda.is_available():
 # from datasets import create_imagetext_dataloader, MixedDataLoader, VISTDataset
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
-    path_to_llm_name, _freeze_params
+    path_to_llm_name, _freeze_params, load_xvla_modules
 
 from transport import Sampler, create_transport
 
 logger = get_logger(__name__, log_level="INFO")
-
 
 def main():
     #########################
@@ -181,9 +180,27 @@ def main():
         ).to(accelerator.device)
         if config.model.showo.llm_vocab_size != model.showo.vocab_size:
             model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
-            print(f"Resize LLM Vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
+            logger.info(f"Resized LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
+    
+    # Load XVLA action modules
+    xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
+    if xvla_checkpoint is not None:
+        logger.info("Loading XVLA action modules...")
+        success = load_xvla_modules(
+            logger,
+            model, 
+            xvla_checkpoint,
+            module_names=config.model.showo.get('xvla_modules_to_load', 
+                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub']),
+            source_prefix=config.model.showo.get('source_prefix', 'transformer'),
+            target_prefix=config.model.showo.get('target_prefix', None),
+        )
+        if not success:
+            logger.error("Failed to load XVLA modules! Please check:")
+        else:
+            logger.info("XVLA action modules loaded successfully!")
 
     # Choose layers to freeze
     _freeze_params(model, config.model.showo.frozen_params)
