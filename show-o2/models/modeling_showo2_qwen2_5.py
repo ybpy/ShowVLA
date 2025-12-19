@@ -137,23 +137,24 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             nn.Linear(hidden_size, hidden_size)
         )
 
-        self.xvla_hidden_size = xvla_hidden_size
-        self.project_xvla_encode = nn.Linear(xvla_hidden_size, hidden_size)
-        self.project_xvla_decode = nn.Linear(hidden_size, xvla_hidden_size)
+        if xvla_hidden_size:
+            self.xvla_hidden_size = xvla_hidden_size
+            self.project_xvla_encode = nn.Linear(xvla_hidden_size, hidden_size)
+            self.project_xvla_decode = nn.Linear(hidden_size, xvla_hidden_size)
 
-        self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, xvla_hidden_size), requires_grad=True)
-        nn.init.normal_(self.pos_emb, std=0.02)
+            self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, xvla_hidden_size), requires_grad=True)
+            nn.init.normal_(self.pos_emb, std=0.02)
 
-        self.norm = nn.LayerNorm(xvla_hidden_size)
-        self.action_encoder = DomainAwareLinear(
-            action_dim + proprio_dim + time_dim, xvla_hidden_size, num_domains=num_domains
-        )
-        self.action_decoder = DomainAwareLinear(xvla_hidden_size, action_dim, num_domains=num_domains)
+            self.norm = nn.LayerNorm(xvla_hidden_size)
+            self.action_encoder = DomainAwareLinear(
+                action_dim + proprio_dim + time_dim, xvla_hidden_size, num_domains=num_domains
+            )
+            self.action_decoder = DomainAwareLinear(xvla_hidden_size, action_dim, num_domains=num_domains)
 
-        self.len_soft_prompts = len_soft_prompts
-        if len_soft_prompts > 0:
-            self.soft_prompt_hub = nn.Embedding(num_domains, len_soft_prompts * xvla_hidden_size)
-            nn.init.normal_(self.soft_prompt_hub.weight, std=0.02)
+            self.len_soft_prompts = len_soft_prompts
+            if len_soft_prompts > 0:
+                self.soft_prompt_hub = nn.Embedding(num_domains, len_soft_prompts * xvla_hidden_size)
+                nn.init.normal_(self.soft_prompt_hub.weight, std=0.02)
         
 
         # adjust for diffusion head

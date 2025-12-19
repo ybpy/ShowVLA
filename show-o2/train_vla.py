@@ -169,6 +169,7 @@ def main():
         model = Showo2Qwen2_5.from_pretrained(
             config.model.showo.pretrained_model_path, 
             use_safetensors=False,
+            xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
             action_dim=config.model.showo.get('action_dim', 20),
             proprio_dim=config.model.showo.get('proprio_dim', 20),
             time_dim=config.model.showo.get('time_dim', 32),

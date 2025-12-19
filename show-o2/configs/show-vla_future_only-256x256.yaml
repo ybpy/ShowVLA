@@ -46,6 +46,7 @@ model:
         frozen_params: null
         params_not_load: null
         pred_act: False
+        xvla_hidden_size: null
 
     clip:
         pretrained_model_path: "google/siglip-so400m-patch14-384"

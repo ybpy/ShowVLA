@@ -6,8 +6,8 @@ wandb:
 
 experiment:
     project: "show-vla"
-    name: "show-vla_future_only-256x256"
-    output_dir: "show-vla_future_only-256x256"
+    name: "show-vla_future_act-256x256"
+    output_dir: "show-vla_future_act-256x256"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -46,6 +46,7 @@ model:
         frozen_params: null
         params_not_load: null
         pred_act: True 
+        xvla_hidden_size: 1024
         action_dim: 20
         proprio_dim: 20
         time_dim: 32
