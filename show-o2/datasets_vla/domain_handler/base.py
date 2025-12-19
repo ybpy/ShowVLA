@@ -60,13 +60,15 @@ class DomainHandler(ABC):
         self.boi_id = showo_token_ids['boi_id']
         self.eoi_id = showo_token_ids['eoi_id']
         self.img_pad_id = showo_token_ids['img_pad_id']
-        self.boa_id = showo_token_ids['boa_id'] 
-        self.eoa_id = showo_token_ids['eoa_id'] 
-        self.act_pad_id = showo_token_ids['act_pad_id'] 
         self.max_seq_len = max_seq_len
         self.image_size = image_size
         self.num_image_tokens = num_image_tokens
-        self.num_action_tokens = num_action_tokens
+
+        if pred_act:
+            self.boa_id = showo_token_ids['boa_id'] 
+            self.eoa_id = showo_token_ids['eoa_id'] 
+            self.act_pad_id = showo_token_ids['act_pad_id'] 
+            self.num_action_tokens = num_action_tokens
         self.pred_act = pred_act
 
     @abstractmethod

@@ -76,7 +76,7 @@ dataset:
         persistent_workers: True
 
     preprocessing:
-        max_vla_seq_len: 600
+        max_vla_seq_len: 640
         vla_image_size: 256
         num_vla_image_tokens: 256
 
@@ -147,7 +147,7 @@ training:
     batch_size_vla: 2
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 16
+    gradient_accumulation_steps: 8
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2

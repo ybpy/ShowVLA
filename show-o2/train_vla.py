@@ -169,6 +169,8 @@ def main():
         model = Showo2Qwen2_5.from_pretrained(
             config.model.showo.pretrained_model_path, 
             use_safetensors=False,
+            low_cpu_mem_usage=False,
+            device_map=None,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
             action_dim=config.model.showo.get('action_dim', 20),
             proprio_dim=config.model.showo.get('proprio_dim', 20),
@@ -201,6 +203,11 @@ def main():
     optimizer_config = config.optimizer.params
     optimizer_type = config.optimizer.name
 
+    if accelerator.is_main_process:
+        print(model)
+        for n, p in model.named_parameters():
+            print(n)
+
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in model.named_parameters() if
@@ -222,7 +229,7 @@ def main():
         },
         {
             "params": [p for n, p in model.named_parameters() if ((
-                'norm' in n or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
+                'norm'==n or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_act
         },
@@ -269,6 +276,7 @@ def main():
         max_seq_len=preproc_config.max_vla_seq_len,
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
+        pred_act=pred_act,
     )
     
     num_train_epochs = 1
@@ -495,7 +503,7 @@ def main():
 
             logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
-                                                action_tokens=action_tokens if pred_act else None,
+                                                action_tokens=action_tokens.to(weight_type) if pred_act else None,
                                                 t=t.to(weight_type),
                                                 attention_mask=block_mask,
                                                 text_masks=text_masks,
@@ -517,7 +525,9 @@ def main():
             avg_loss_flow = accelerator.gather(loss_flow.repeat(total_batch_size_per_gpu)).mean()
             # loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow
             if pred_act:
-                loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * sum(action_loss_dict.values())
+                loss_action = sum(action_loss_dict.values())
+                avg_action_loss = accelerator.gather(loss_action.repeat(total_batch_size_per_gpu)).mean()
+                loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * loss_action
             else:
                 loss = config.training.flow_coeff * loss_flow
 
@@ -556,29 +566,37 @@ def main():
                             config.training.gradient_accumulation_steps * total_batch_size_per_gpu / batch_time_m.val
                     )
                     lr = [group["lr"] for group in optimizer.param_groups]
-                    if len(lr) == 3:
+                    if len(lr) == 6:
                         logs = {
                             # "step_loss_ntp": avg_loss_ntp.item(),
                             "step_loss_flow": avg_loss_flow.item(),
                             "lr_ve": lr[0],
                             "lr_proj": lr[1],
                             "lr_showo": lr[2],
-                            "samples/sec/gpu": samples_per_second_per_gpu,
-                            "data_time": data_time_m.val,
-                            "batch_time": batch_time_m.val,
                         }
+                        if pred_act:
+                            logs.update({
+                                "step_loss_action": avg_action_loss.item(),
+                                "lr_act": lr[3],
+                                "lr_soft_prompt": lr[4],
+                                "lr_project_xvla": lr[5],
+                            })
                         accelerator.log(logs, step=global_step + 1)
                         logger.info(
-                            f"Epoch: {epoch} "
                             f"Step: {global_step + 1} "
                             # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
                             f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
-                            f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
-                            f"Batch (t): {batch_time_m.val:0.4f} "
                             f"LR_ve: {lr[0]:0.6f} "
                             f"LR_proj: {lr[1]:0.6f} "
                             f"LR_showo: {lr[2]:0.6f}"
                         )
+                        if pred_act:
+                            logger.info(
+                                f"Loss_ACTION: {avg_action_loss.item():0.4f} "
+                                f"LR_act: {lr[3]:0.6f} "
+                                f"LR_soft_prompt: {lr[4]:0.6f} "
+                                f"LR_project_xvla: {lr[5]:0.6f} "
+                            )
                     else:
                         logs = {
                             # "step_loss_ntp": avg_loss_ntp.item(),
