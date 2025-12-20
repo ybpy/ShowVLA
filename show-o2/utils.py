@@ -1,4 +1,4 @@
-from typing import Any, List, Tuple
+from typing import Any, KeysView, List, Tuple
 from omegaconf import DictConfig, ListConfig, OmegaConf
 import torch
 import numpy as np
@@ -337,14 +337,14 @@ def load_xvla_modules(
     
     filtered_state_dict = {}
     for key, value in xvla_state_dict.items():
-        should_load = any(module_name in key for module_name in module_names)
+        if source_prefix and not key.startswith(f"{source_prefix}."):
+            continue
+
+        new_key = key[len(source_prefix) + 1:]  # +1 for the dot
+
+        should_load = any(module_name == new_key.split('.')[0] for module_name in module_names)
         if not should_load:
             continue
-        
-        # remove source_suffix
-        new_key = key
-        if source_prefix and key.startswith(f"{source_prefix}."):
-            new_key = key[len(source_prefix) + 1:]  # +1 for the dot
         
         # add target_prefix
         if target_prefix:
@@ -361,12 +361,7 @@ def load_xvla_modules(
         return False
     
     missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-    actual_missing = [k for k in missing_keys if any(m in k for m in module_names)]
     
-    logger.info(f"Successfully loaded {len(filtered_state_dict)} parameters from XVLA")
-    if actual_missing:
-        logger.warning(f"Missing keys in model (expected from XVLA): {actual_missing}")
-    if unexpected_keys:
-        logger.warning(f"Unexpected keys (not in model): {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"⚠️  Unexpected keys: {unexpected_keys}")
+    logger.info(f"Successfully loaded {list(filtered_state_dict.keys())} from XVLA")
     
     return len(filtered_state_dict) > 0

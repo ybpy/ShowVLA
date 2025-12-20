@@ -179,8 +179,8 @@ def main():
             num_domains=config.model.showo.get('num_domains', 20),
         ).to(accelerator.device)
         if config.model.showo.llm_vocab_size != model.showo.vocab_size:
+            logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
             model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
-            logger.info(f"Resized LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
     
@@ -222,8 +222,8 @@ def main():
 
     if accelerator.is_main_process:
         print(model)
-        for n, p in model.named_parameters():
-            print(n)
+        # for n, p in model.named_parameters():
+        #     print(n)
 
     optimizer_grouped_parameters = [
         {
@@ -246,7 +246,7 @@ def main():
         },
         {
             "params": [p for n, p in model.named_parameters() if ((
-                'norm'==n or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
+                'pos_emb' in n or 'norm' == n.split('.')[0] or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_act
         },
