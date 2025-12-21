@@ -47,9 +47,11 @@ if torch.cuda.is_available():
 # from datasets import create_imagetext_dataloader, MixedDataLoader, VISTDataset
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
-    path_to_llm_name, _freeze_params, load_xvla_modules
+    path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters
 
 from transport import Sampler, create_transport
+
+from transformers import Qwen2MoeConfig
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -201,6 +203,25 @@ def main():
             logger.error("Failed to load XVLA modules! Please check:")
         else:
             logger.info("XVLA action modules loaded successfully!")
+
+    # Drop-upcycling if needed
+    if config.model.showo.drop_upcycling:
+        logger.info("Dropping upcycling modules...")
+        # Create MoE config from yaml settings
+        moe_config_dict = OmegaConf.to_container(config.model.showo.moe_config, resolve=True)
+        target_config = Qwen2MoeConfig(**moe_config_dict)
+        model.showo = replace_model_parameters(
+            logger=logger,
+            source_model=model.showo,
+            target_config=target_config,
+            output_path=config.experiment.output_dir,
+            num_experts=config.model.showo.moe_config.num_experts,
+            num_layers=config.model.showo.moe_config.num_hidden_layers,
+            seed=config.training.seed,
+            init_method=config.model.showo.init_method,
+            ffn_init_ratio=config.model.showo.ffn_init_ratio,
+        )
+        logger.info("Drop-upcycling completed. Model converted to MoE architecture.")
 
     # Choose layers to freeze
     _freeze_params(model, config.model.showo.frozen_params)
