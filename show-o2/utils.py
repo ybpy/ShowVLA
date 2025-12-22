@@ -421,7 +421,6 @@ def shuffle_and_partially_initialize(
             std=init_std,
             mean=init_mean,
         )
-        logger.info(f"Initialized tensor shape for down_proj: {init_tensor.shape}")
         shuffled[:, init_indices] = init_tensor
     else:
         init_part = shuffled[init_indices, :]
