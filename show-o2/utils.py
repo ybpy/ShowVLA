@@ -1,4 +1,4 @@
-from typing import Any, KeysView, List, Tuple
+from typing import Any, List, Tuple
 from omegaconf import DictConfig, ListConfig, OmegaConf
 import torch
 import numpy as np
@@ -8,7 +8,7 @@ from copy import deepcopy
 from collections import OrderedDict
 import random
 from decord import VideoReader, cpu
-from transformers import AutoConfig, AutoModelForCausalLM
+from models import Qwen2MoeForCausalLM
 import re
 from tqdm import tqdm
 
@@ -408,22 +408,19 @@ def shuffle_and_partially_initialize(
             f"Layer {layer_idx}, Expert {expert_idx}, Gate_proj/Up_proj: Shuffled and resized to {shuffled.size(0)}"
         )
     init_size = int(target_size * ffn_init_ratio)
-    logger.info(f"Initialization size: {init_size}")
     init_indices = torch.randperm(target_size)[:init_size]
-    logger.info(f"Number of indices to initialize: {len(init_indices)}")
     if is_down_proj:
         init_part = shuffled[:, init_indices]
-        logger.info(f"init_part shape for gate_proj/up_proj: {init_part.shape}")
+        logger.info(f"init_part shape for down_proj: {init_part.shape}")
         init_mean = init_part.mean().item()
         init_std = init_part.std().item()
-        logger.info(f"down_proj stats - mean: {init_mean:g}, std: {init_std:g}")
         init_tensor = initialize_weights(
             logger, 
             (tensor.size(0), init_size),
             "torch_normal",
             std=init_std,
             mean=init_mean,
-        ).to(dtype=torch.bfloat16)
+        )
         logger.info(f"Initialized tensor shape for down_proj: {init_tensor.shape}")
         shuffled[:, init_indices] = init_tensor
     else:
@@ -431,25 +428,18 @@ def shuffle_and_partially_initialize(
         logger.info(f"init_part shape for gate_proj/up_proj: {init_part.shape}")
         init_mean = init_part.mean().item()
         init_std = init_part.std().item()
-        logger.info(f"down_proj stats - mean: {init_mean:g}, std: {init_std:g}")
         init_tensor = initialize_weights(
             logger, 
             (init_size, tensor.size(1)),
             "torch_normal",
             std=init_std,
             mean=init_mean,
-        ).to(dtype=torch.bfloat16)
-        logger.info(
-            f"Initialized tensor shape for gate_proj/up_proj: {init_tensor.shape}"
         )
         shuffled[init_indices, :] = init_tensor
 
     logger.info(
-        f"Layer {layer_idx}, Expert {expert_idx}, {'Down_proj' if is_down_proj else 'Gate_proj/Up_proj'}: "
         f"Original size: {original_size}, Target size: {target_size}, Initialized size: {init_size}"
     )
-    logger.info(f"Permutation used: {perm[:10]}... (showing first 10 elements)")
-    logger.info(f"Init indices: {init_indices[:10]}... (showing first 10 elements)")
 
     return shuffled
 
@@ -475,7 +465,6 @@ def replace_model_parameters(
     logger,
     source_model,
     target_config,
-    output_path,
     num_experts,
     num_layers,
     seed,
@@ -484,10 +473,8 @@ def replace_model_parameters(
 ):
     set_seed(seed)
 
-    target_model = AutoModelForCausalLM.from_config(
-        target_config, torch_dtype=torch.bfloat16
-    )
-    target_intermediate_size = target_config.intermediate_size
+    target_model = Qwen2MoeForCausalLM(target_config)
+    target_intermediate_size = target_config.moe_intermediate_size
     logger.info(f"Target intermediate size: {target_intermediate_size}")
 
     exclude_pattern = r"model\.layers\.\d+\.mlp\.(gate_proj|up_proj|down_proj)\.weight"
@@ -496,46 +483,47 @@ def replace_model_parameters(
         if re.match(exclude_pattern, name):
             exclude_layers.add(name)
 
-    base_src = "model.layers.{}.block_sparse_moe.experts.{}"
+    logger.info(f"exclude_layers: {exclude_layers}")
+
+    base_src = "model.layers.{}.mlp.experts.{}"
     base_tgt = "model.layers.{}.mlp"
     replace_mapping = {
-        f"{base_src}.w1.weight": f"{base_tgt}.gate_proj.weight",
-        f"{base_src}.w2.weight": f"{base_tgt}.down_proj.weight",
-        f"{base_src}.w3.weight": f"{base_tgt}.up_proj.weight",
+        f"{base_src}.gate_proj.weight": f"{base_tgt}.gate_proj.weight",
+        f"{base_src}.down_proj.weight": f"{base_tgt}.down_proj.weight",
+        f"{base_src}.up_proj.weight": f"{base_tgt}.up_proj.weight",
     }
 
     source_state_dict = source_model.state_dict()
     target_state_dict = target_model.state_dict()
 
-    for name, param in tqdm(target_state_dict.items(), desc="Replacing parameters"):
-        if name not in exclude_layers and name in source_state_dict:
+    no_find_parameters = [] 
+    for name, param in target_state_dict.items():
+        if name not in exclude_layers:
+            if name not in source_state_dict:
+                assert ".mlp.gate." in name or ".mlp.experts." in name
+                no_find_parameters.append(name)
+                continue
             target_state_dict[name] = source_state_dict[name]
-            logger.info(f"Parameter {name} replaced")
 
-    for layer_idx in tqdm(range(num_layers), desc="Initializing gate weights"):
-        gate_weight_name = f"model.layers.{layer_idx}.block_sparse_moe.gate.weight"
+    for layer_idx in range(num_layers):
+        gate_weight_name = f"model.layers.{layer_idx}.mlp.gate.weight"
         if gate_weight_name in target_state_dict:
             target_state_dict[gate_weight_name] = initialize_gate_weights(
                 target_state_dict[gate_weight_name].size(), init_method
             )
-            logger.info(
-                f"Gate weight {gate_weight_name} initialized with {init_method}"
-            )
 
-    for layer_idx in tqdm(range(num_layers), desc="Replacing FFN layers"):
+    for layer_idx in range(num_layers):
         for expert_idx in range(num_experts):
             perm = torch.randperm(target_intermediate_size)
-            logger.info(
-                f"Layer {layer_idx}, Expert {expert_idx}, Generated permutation: {perm[:10]}... (showing first 10 elements)"
-            )
             for target_pattern, source_pattern in replace_mapping.items():
                 target_name = target_pattern.format(layer_idx, expert_idx)
                 source_name = source_pattern.format(layer_idx)
+                assert target_name in target_state_dict and source_name in source_state_dict, f"{target_name} {source_name}"
                 if (
                     target_name in target_state_dict
                     and source_name in source_state_dict
                 ):
-                    source_tensor = source_state_dict[source_name]
+                    source_tensor = source_state_dict[source_name].cpu()
 
                     # Determine if it's down_proj (w2) or not
                     is_down_proj = "down_proj" in source_name
@@ -544,6 +532,7 @@ def replace_model_parameters(
                     )
                     # Shuffle the tensor along the intermediate dimension
                     shuffled_and_init_tensor = shuffle_and_partially_initialize(
+                        logger,
                         source_tensor,
                         perm,
                         target_intermediate_size,
@@ -552,15 +541,10 @@ def replace_model_parameters(
                         expert_idx,
                         ffn_init_ratio,
                     )
-                    logger.info(
-                        f"Layer {layer_idx}, Expert {expert_idx}, Shuffled tensor shape: {shuffled_and_init_tensor.shape}"
-                    )
                     target_state_dict[target_name] = shuffled_and_init_tensor
 
-                    logger.info(f"FFN layer {target_name} replaced with {source_name}")
+                    logger.info(f"{target_name} init from {source_name}")
 
     target_model.load_state_dict(target_state_dict)
-    target_model.save_pretrained(output_path, torch_dtype=torch.bfloat16)
-    logger.info(f"Modified model saved to {output_path}")
 
     return target_model

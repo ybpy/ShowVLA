@@ -185,6 +185,29 @@ def main():
             model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
+
+    # Drop-upcycling if needed
+    if config.model.showo.drop_upcycling:
+        logger.info("Dropping upcycling modules...")
+        # Create MoE config from yaml settings
+        config.model.showo.moe_config.vocab_size = config.model.showo.llm_vocab_size
+        moe_config_dict = OmegaConf.to_container(config.model.showo.moe_config, resolve=True)
+        target_config = Qwen2MoeConfig(**moe_config_dict)
+        model.showo = replace_model_parameters(
+            logger=logger,
+            source_model=model.showo,
+            target_config=target_config,
+            num_experts=config.model.showo.moe_config.num_experts,
+            num_layers=config.model.showo.moe_config.num_hidden_layers,
+            seed=config.training.seed,
+            init_method=config.model.showo.init_method,
+            ffn_init_ratio=config.model.showo.ffn_init_ratio,
+        ).to(accelerator.device)
+        logger.info("Drop-upcycling completed. Model converted to MoE architecture.")
+
+        if accelerator.is_main_process:
+            model.save_pretrained(config.uncycled_moe_init_model_path)
+            logger.info(f"Modified model saved to {config.uncycled_moe_init_model_path}")
     
     # Load XVLA action modules
     xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
@@ -204,24 +227,6 @@ def main():
         else:
             logger.info("XVLA action modules loaded successfully!")
 
-    # Drop-upcycling if needed
-    if config.model.showo.drop_upcycling:
-        logger.info("Dropping upcycling modules...")
-        # Create MoE config from yaml settings
-        moe_config_dict = OmegaConf.to_container(config.model.showo.moe_config, resolve=True)
-        target_config = Qwen2MoeConfig(**moe_config_dict)
-        model.showo = replace_model_parameters(
-            logger=logger,
-            source_model=model.showo,
-            target_config=target_config,
-            output_path=config.experiment.output_dir,
-            num_experts=config.model.showo.moe_config.num_experts,
-            num_layers=config.model.showo.moe_config.num_hidden_layers,
-            seed=config.training.seed,
-            init_method=config.model.showo.init_method,
-            ffn_init_ratio=config.model.showo.ffn_init_ratio,
-        )
-        logger.info("Drop-upcycling completed. Model converted to MoE architecture.")
 
     # Choose layers to freeze
     _freeze_params(model, config.model.showo.frozen_params)
