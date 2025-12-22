@@ -7,7 +7,7 @@ wandb:
 uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
-    project: "showvla-moe"
+    project: "show-vla"
     name: "showvla-moe_future_act"
     output_dir: "showvla-moe_future_act"
     output_dataloader_state_dir: null
@@ -189,11 +189,11 @@ xvla:
     action_mode: ee6d
 
 training:
-    train_metas_path: /home/hyx/X-VLA/evaluation/libero/meta_py310
+    train_metas_path: ./meta_libero_data
     batch_size_vla: 2
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 10
+    gradient_accumulation_steps: 12
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2
