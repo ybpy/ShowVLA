@@ -473,7 +473,9 @@ def replace_model_parameters(
     set_seed(seed)
 
     target_model = Qwen2MoeForCausalLM(target_config)
+    ori_intermediate_size = target_config.intermediate_size
     target_intermediate_size = target_config.moe_intermediate_size
+    logger.info(f"Original intermediate size: {ori_intermediate_size}")
     logger.info(f"Target intermediate size: {target_intermediate_size}")
 
     exclude_pattern = r"model\.layers\.\d+\.mlp\.(gate_proj|up_proj|down_proj)\.weight"
@@ -513,7 +515,7 @@ def replace_model_parameters(
 
     for layer_idx in range(num_layers):
         for expert_idx in range(num_experts):
-            perm = torch.randperm(target_intermediate_size)
+            perm = torch.randperm(ori_intermediate_size)
             for target_pattern, source_pattern in replace_mapping.items():
                 target_name = target_pattern.format(layer_idx, expert_idx)
                 source_name = source_pattern.format(layer_idx)
