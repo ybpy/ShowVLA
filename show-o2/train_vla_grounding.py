@@ -44,7 +44,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-# from datasets import create_imagetext_dataloader, MixedDataLoader, VISTDataset
+from datasets_vla import COCODataset, MixedDataLoader
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters
@@ -305,24 +305,68 @@ def main():
     #################################
     logger.info("Creating dataloaders and lr_scheduler")
 
-    
-    # Iterable dataloader
-    mixed_loader = create_dataloader(
-        num_workers=dataset_config.num_workers,
-        batch_size=config.training.batch_size_vla,
-        metas_path=config.training.train_metas_path,
-        num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
-        action_mode=config.xvla.action_mode,
-        training=True,
+    def create_dataloader(dataset, batch_size, collate_fn):
+        if accelerator.num_processes > 1:
+            sampler = DistributedSampler(dataset,
+                                         num_replicas=accelerator.num_processes,
+                                         rank=accelerator.process_index,
+                                         shuffle=True,
+                                         drop_last=True,
+                                         )
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+
+        dataloader = DataLoader(dataset, batch_size=batch_size,
+                                        sampler=sampler, collate_fn=collate_fn,
+                                        shuffle=shuffle, num_workers=dataset_config.num_workers,
+                                        drop_last=True,
+                                        pin_memory=True,
+                                        persistent_workers=True)
+        return dataloader
+
+    dataset = COCODataset(
+        metas_path=dataset_config.coco_metas_path,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=preproc_config.max_vla_seq_len,
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
-        pred_act=pred_act,
     )
+    train_dataloader_mixed_modal = create_dataloader(dataset,
+                                                     config.training.batch_size_vla,
+                                                     dataset.collate_fn)
+
+    num_update_steps_per_epoch = len(train_dataloader_mixed_modal)
+    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+
+    # Combine these dataloaders into a single iterable model
+    mixed_loader = MixedDataLoader(
+        loader_list=[train_dataloader_mixed_modal],
+        samp_probs=config.dataset.samp_probs,
+        accumulation=config.dataset.accumulation,
+        mode=config.dataset.mixed_loader_mode
+    )
+
     
-    num_train_epochs = 1
+    # # Iterable dataloader
+    # mixed_loader = create_dataloader(
+    #     num_workers=dataset_config.num_workers,
+    #     batch_size=config.training.batch_size_vla,
+    #     metas_path=config.training.train_metas_path,
+    #     num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
+    #     action_mode=config.xvla.action_mode,
+    #     training=True,
+    #     text_tokenizer=text_tokenizer,
+    #     showo_token_ids=showo_token_ids,
+    #     max_seq_len=preproc_config.max_vla_seq_len,
+    #     image_size=preproc_config.vla_image_size,
+    #     num_image_tokens=preproc_config.num_vla_image_tokens,
+    #     pred_act=pred_act,
+    # )
+    
+    # num_train_epochs = 1
 
 
     ##################################
@@ -644,20 +688,18 @@ def main():
                         logs = {
                             # "step_loss_ntp": avg_loss_ntp.item(),
                             "step_loss_flow": avg_loss_flow.item(),
-                            "lr": lr[0],
-                            "samples/sec/gpu": samples_per_second_per_gpu,
-                            "data_time": data_time_m.val,
-                            "batch_time": batch_time_m.val,
+                            "lr_ve": lr[0],
+                            "lr_proj": lr[1],
+                            "lr_showo": lr[2],
                         }
                         accelerator.log(logs, step=global_step + 1)
                         logger.info(
-                            f"Epoch: {epoch} "
                             f"Step: {global_step + 1} "
                             # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
                             f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
-                            f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
-                            f"Batch (t): {batch_time_m.val:0.4f} "
-                            f"LR: {lr[0]:0.6f}"
+                            f"LR_ve: {lr[0]:0.6f} "
+                            f"LR_proj: {lr[1]:0.6f} "
+                            f"LR_showo: {lr[2]:0.6f}"
                         )
                     # resetting batch / data time meters per log window
                     batch_time_m.reset()

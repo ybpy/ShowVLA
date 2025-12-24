@@ -19,6 +19,10 @@ import torch
 from torch.utils.data import DataLoader
 from .dataset import InfiniteDataReader
 
+from .coco_dataset import COCODataset
+from .mixed_dataloader import MixedDataLoader
+
+
 def worker_init_fn(worker_id: int):
     base_seed = torch.initial_seed() % (2**32)
     import random, numpy as np

@@ -15,13 +15,90 @@
 # ------------------------------------------------------------------------------
 
 from __future__ import annotations
-import io, numpy as np, pyarrow.parquet as pq, av, cv2
+import io, numpy as np, pyarrow.parquet as pq, av, cv2, os
 from mmengine import fileio
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 import h5py
 from typing import Sequence, Dict
 import torch
+
+
+BBOX_COLORS = {
+    "red": (255, 0, 0),
+    "green": (0, 255, 0),
+    "blue": (0, 0, 255),
+}
+
+MASK_COLORS = {
+    "red": (255, 0, 0),
+    "green": (0, 255, 0),
+    "blue": (0, 0, 255),
+    "yellow": (255, 255, 0),
+    "purple": (128, 0, 128),
+    "orange": (255, 165, 0),
+    "cyan": (0, 240, 240),
+    "magenta": (255, 0, 255),
+    "lime": (0, 255, 128),
+    "pink": (255, 105, 180),
+    "indigo": (75, 0, 130),
+    "gold": (255, 215, 0),
+    "olive": (128, 128, 0),
+    "violet": (148, 0, 211),
+    "coral": (255, 127, 80),
+    "khaki": (240, 230, 140),
+}
+
+def try_get_img_with_bbox(img, instances, color):
+    img = np.array(img)
+    img_h, img_w, c = img.shape
+    
+    bboxes = []
+    for ann in instances:
+        if ann["iscrowd"]:
+            return None
+        segm = ann["segmentation"]
+        assert type(segm) == list
+        if len(segm) > 1:
+            return None
+        
+        bbox = ann["bbox"]
+        bboxes.append(bbox)
+    
+    if len(bboxes) > 8:
+        return None
+
+    # draw all the bboxes on the image with the color
+    for bbox in bboxes:
+        x, y, w, h = bbox
+        x1, y1, x2, y2 = int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))
+        if w < 6:
+            x1 = max(0, x1-3)
+            x2 = min(img_w-1, x2+3)
+        if h < 6:
+            y1 = max(0, y1-3)
+            y2 = min(img_h-1, y2+3)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 4)
+    
+    return Image.fromarray(img)
+
+def get_img_with_segment_mask(img, instances, coco, color, mask_color_weight=0.7):
+    img = np.array(img)
+    comb_mask = None
+    for ann in instances:
+        mask = coco.annToMask(ann)
+        if comb_mask is None:
+            comb_mask = mask
+        else:
+            comb_mask = comb_mask | mask
+
+    colored_mask = np.zeros_like(img)
+    colored_mask[comb_mask==1] = color
+
+    img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
+    
+    return Image.fromarray(img)
+
 
 def read_bytes(path: str) -> bytes:
     return fileio.get(path)
