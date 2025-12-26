@@ -24,7 +24,7 @@ wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1
 pip install flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl --no-build-isolation;
 
 pip install deepspeed==0.17.1;
-pip install accelerate==1.2.1;
+pip install accelerate==1.12.0;
 pip install timm==1.0.15;
 pip install huggingface-hub==0.36.0;
 pip install onnxruntime==1.20.1;
