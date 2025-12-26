@@ -8,8 +8,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-moe_grounding"
-    output_dir: "showvla-moe_grounding"
+    name: "showvla-moe_grounding_fix"
+    output_dir: "showvla-moe_grounding_fix"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -17,7 +17,7 @@ experiment:
     generate_every: 5000
     log_every: 100
     log_grad_norm_every: 100
-    resume_from_checkpoint: null
+    resume_from_checkpoint: "latest"
 
 model:
     vae_model:
@@ -110,8 +110,6 @@ dataset:
     accumulation: 1
     mixed_loader_mode: "sequential_max_size_cycle"
     params:
-        coco_metas_path: ./meta_coco_data
-
         train_mixed_modal_shards_path_or_url: "/path/to/your/images/train"
         annotation_path: "/path/to/your/vist_train_annotations.json"
         is_clip_encoder: False
@@ -124,7 +122,7 @@ dataset:
         persistent_workers: True
 
     preprocessing:
-        max_vla_seq_len: 560
+        max_vla_seq_len: 544
         vla_image_size: 256
         num_vla_image_tokens: 256
 
@@ -155,6 +153,7 @@ optimizer:
         learning_rate_ve: 0.00001
         learning_rate_proj: 0.00002
         learning_rate_showo: 0.00002
+        learning_rate_showo_expert: 0.00005
         learning_rate_act: 0.00002
         learning_rate_soft_prompt: 0.000005
         learning_rate_project_xvla: 0.0005
@@ -191,18 +190,23 @@ xvla:
     action_mode: ee6d
 
 training:
+    use_lora: True
+    lr_multipler: 10.0
+
+    coco_metas_path: ./meta_coco_data
+    batch_size_grounding: 3
     train_metas_path: ./meta_libero_data
     batch_size_vla: 2
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 12
+    gradient_accumulation_steps: 8
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 10000
-    max_train_steps: 20000
+    max_train_steps: 10000
     cond_dropout_prob: 0.1
     label_smoothing: 0.0
     max_grad_norm: 1.0

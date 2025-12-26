@@ -364,6 +364,8 @@ def load_xvla_modules(
         return False
     
     missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+
+    logger.info(f"unexpected_keys: {unexpected_keys}")
     
     logger.info(f"Successfully loaded {list(filtered_state_dict.keys())} from XVLA")
     
@@ -378,7 +380,6 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 def initialize_weights(logger, size, method, std=0.02, mean=0):
-    logger.info(f"Initializing weights: method={method}, std={std}, mean={mean}")
     if method == "torch_normal":
         return torch.normal(mean=mean, std=std, size=size)
     else:
@@ -389,29 +390,16 @@ def shuffle_and_partially_initialize(
 ):
     if is_down_proj:
         original_size = tensor.size(1)
-        logger.info(
-            f"Layer {layer_idx}, Expert {expert_idx}, Down_proj: Original intermediate size: {original_size}"
-        )
         # For down_proj (w2), shuffle columns
         shuffled = tensor.index_select(1, perm[:target_size])
-        logger.info(
-            f"Layer {layer_idx}, Expert {expert_idx}, Down_proj: Shuffled and resized to {shuffled.size(1)}"
-        )
     else:
         original_size = tensor.size(0)
-        logger.info(
-            f"Layer {layer_idx}, Expert {expert_idx}, Gate_proj/Up_proj: Original intermediate size: {original_size}"
-        )
         # For gate_proj (w1) and up_proj (w3), shuffle rows
         shuffled = tensor.index_select(0, perm[:target_size])
-        logger.info(
-            f"Layer {layer_idx}, Expert {expert_idx}, Gate_proj/Up_proj: Shuffled and resized to {shuffled.size(0)}"
-        )
     init_size = int(target_size * ffn_init_ratio)
     init_indices = torch.randperm(target_size)[:init_size]
     if is_down_proj:
         init_part = shuffled[:, init_indices]
-        logger.info(f"init_part shape for down_proj: {init_part.shape}")
         init_mean = init_part.mean().item()
         init_std = init_part.std().item()
         init_tensor = initialize_weights(
@@ -424,7 +412,6 @@ def shuffle_and_partially_initialize(
         shuffled[:, init_indices] = init_tensor
     else:
         init_part = shuffled[init_indices, :]
-        logger.info(f"init_part shape for gate_proj/up_proj: {init_part.shape}")
         init_mean = init_part.mean().item()
         init_std = init_part.std().item()
         init_tensor = initialize_weights(
@@ -435,10 +422,6 @@ def shuffle_and_partially_initialize(
             mean=init_mean,
         )
         shuffled[init_indices, :] = init_tensor
-
-    logger.info(
-        f"Original size: {original_size}, Target size: {target_size}, Initialized size: {init_size}"
-    )
 
     return shuffled
 
@@ -478,14 +461,6 @@ def replace_model_parameters(
     logger.info(f"Original intermediate size: {ori_intermediate_size}")
     logger.info(f"Target intermediate size: {target_intermediate_size}")
 
-    exclude_pattern = r"model\.layers\.\d+\.mlp\.(gate_proj|up_proj|down_proj)\.weight"
-    exclude_layers = set()
-    for name in target_model.state_dict().keys():
-        if re.match(exclude_pattern, name):
-            exclude_layers.add(name)
-
-    logger.info(f"exclude_layers: {exclude_layers}")
-
     base_src = "model.layers.{}.mlp.experts.{}"
     base_tgt = "model.layers.{}.mlp"
     replace_mapping = {
@@ -499,12 +474,11 @@ def replace_model_parameters(
 
     no_find_parameters = [] 
     for name, param in target_state_dict.items():
-        if name not in exclude_layers:
-            if name not in source_state_dict:
-                assert ".mlp.gate." in name or ".mlp.experts." in name
-                no_find_parameters.append(name)
-                continue
-            target_state_dict[name] = source_state_dict[name]
+        if name not in source_state_dict:
+            assert ".mlp.gate." in name or ".mlp.experts." in name
+            no_find_parameters.append(name)
+            continue
+        target_state_dict[name] = source_state_dict[name]
 
     for layer_idx in range(num_layers):
         gate_weight_name = f"model.layers.{layer_idx}.mlp.gate.weight"
@@ -520,32 +494,28 @@ def replace_model_parameters(
                 target_name = target_pattern.format(layer_idx, expert_idx)
                 source_name = source_pattern.format(layer_idx)
                 assert target_name in target_state_dict and source_name in source_state_dict, f"{target_name} {source_name}"
-                if (
-                    target_name in target_state_dict
-                    and source_name in source_state_dict
-                ):
-                    source_tensor = source_state_dict[source_name].cpu()
 
-                    # Determine if it's down_proj (w2) or not
-                    is_down_proj = "down_proj" in source_name
-                    logger.info(
-                        f"Layer {layer_idx}, Expert {expert_idx}, Original tensor shape: {source_tensor.shape}"
-                    )
-                    # Shuffle the tensor along the intermediate dimension
-                    shuffled_and_init_tensor = shuffle_and_partially_initialize(
-                        logger,
-                        source_tensor,
-                        perm,
-                        target_intermediate_size,
-                        is_down_proj,
-                        layer_idx,
-                        expert_idx,
-                        ffn_init_ratio,
-                    )
-                    target_state_dict[target_name] = shuffled_and_init_tensor
+                source_tensor = source_state_dict[source_name].float().cpu()
 
-                    logger.info(f"{target_name} init from {source_name}")
+                # Determine if it's down_proj (w2) or not
+                is_down_proj = "down_proj" in source_name
+                # Shuffle the tensor along the intermediate dimension
+                shuffled_and_init_tensor = shuffle_and_partially_initialize(
+                    logger,
+                    source_tensor,
+                    perm,
+                    target_intermediate_size,
+                    is_down_proj,
+                    layer_idx,
+                    expert_idx,
+                    ffn_init_ratio,
+                )
+                target_state_dict[target_name] = shuffled_and_init_tensor
 
     target_model.load_state_dict(target_state_dict)
 
     return target_model
+
+def remove_trailing_digits(s):
+    # 匹配字符串结尾的'.'+连续数字，替换为空字符串
+    return re.sub(r'.\d+$', '', s)

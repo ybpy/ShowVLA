@@ -44,14 +44,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-# from datasets import create_imagetext_dataloader, MixedDataLoader, VISTDataset
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
-    path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters
+    path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits
 
 from transport import Sampler, create_transport
 
 from transformers import Qwen2MoeConfig
+from peft import LoraConfig, get_peft_model
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -211,7 +211,7 @@ def main():
     
     # Load XVLA action modules
     xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
-    if xvla_checkpoint is not None:
+    if xvla_checkpoint is not None and config.model.showo.xvla_hidden_size is not None:
         logger.info("Loading XVLA action modules...")
         success = load_xvla_modules(
             logger,
@@ -226,6 +226,66 @@ def main():
             logger.error("Failed to load XVLA modules! Please check:")
         else:
             logger.info("XVLA action modules loaded successfully!")
+
+    use_lora = config.training.get('use_lora', False)
+    lr_multipler = config.training.get('lr_multipler', 1.0)
+    if use_lora:
+        suffix_of_modules_to_save = [
+            "mlp.gate",
+            # "mlp.experts",
+            "lm_head",
+            "image_embedder_und",
+            "image_embedder_gen",
+            "position_embedding",
+            "fusion_proj",
+            "time_embed",
+            "diff_proj",
+            "time_embed_proj",
+            "diffusion_head_b",
+        ]
+        modules_to_save = ["norm"]
+        if config.model.showo.xvla_hidden_size is not None:
+            modules_to_save = [
+                "project_xvla_encode",
+                "project_xvla_decode",
+                "pos_emb",
+                "norm",
+                "action_encoder",
+                "action_decoder",
+                "soft_prompt_hub",
+            ]
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
+                continue
+            if any((name.endswith(x) or remove_trailing_digits(name).endswith(x)) for x in suffix_of_modules_to_save): 
+                modules_to_save.append(name)
+        for name in modules_to_save:
+            logger.info(f"[modules_to_save] {name}")
+        
+        lora_config = LoraConfig(
+            lora_alpha=64,
+            r=32,
+            bias="none",
+            target_modules="all-linear",
+            modules_to_save=modules_to_save,
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+
+
+    use_compile = config.training.get('use_compile', True)
+    compile_mode = config.training.get('compile_mode', "default")
+    if use_compile:
+        try:
+            if hasattr(torch, "compile"):
+                compile_kwargs = {"mode": compile_mode}
+                model = torch.compile(model, **compile_kwargs)
+                logger.info(f"Enabled torch.compile with mode={compile_mode}")
+            else:
+                logger.warning("torch.compile is unavailable in the installed torch version.")
+        except Exception as exc:
+            logger.warning(f"Failed to enable torch.compile: {exc}. Continuing without compilation.")
+            use_compile = False
 
 
     # Choose layers to freeze
@@ -249,7 +309,13 @@ def main():
     if accelerator.is_main_process:
         print(model)
         # for n, p in model.named_parameters():
-        #     print(n)
+        #     print(n + (" RequireGrad" if p.requires_grad else ""))
+
+    xval_norm_name_index = 0
+    if use_lora:
+        xval_norm_name_index += 2
+    if use_compile:
+        xval_norm_name_index += 1
 
     optimizer_grouped_parameters = [
         {
@@ -257,22 +323,29 @@ def main():
                        (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
                         and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_ve,
+            "lr": optimizer_config.learning_rate_ve * lr_multipler,
         },
         {
             "params": [p for n, p in model.named_parameters() if ('fusion_proj' in n and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_proj
+            "lr": optimizer_config.learning_rate_proj * lr_multipler
         },
         {
             "params": [p for n, p in model.named_parameters() if ((
-                'showo' in n or 'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
+                (('showo' in n) and ('experts' not in n)) or 
+                'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
-            "lr": optimizer_config.learning_rate_showo
+            "lr": optimizer_config.learning_rate_showo * lr_multipler
         },
         {
             "params": [p for n, p in model.named_parameters() if ((
-                'pos_emb' in n or 'norm' == n.split('.')[0] or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
+                'experts' in n) and p.requires_grad)],
+            "weight_decay": optimizer_config.weight_decay,
+            "lr": optimizer_config.learning_rate_showo_expert * lr_multipler
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if ((
+                'pos_emb' in n or 'norm' == n.split('.')[xval_norm_name_index] or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_act
         },
@@ -321,8 +394,7 @@ def main():
         num_image_tokens=preproc_config.num_vla_image_tokens,
         pred_act=pred_act,
     )
-    
-    num_train_epochs = 1
+
 
 
     ##################################
@@ -353,18 +425,26 @@ def main():
                 for k in params_to_delete:
                     del state_dict[k]
 
-            model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
+            # Unwrap model manually to match the state_dict structure
+            unwrapped_model = model
+            while hasattr(unwrapped_model, "_orig_mod"):
+                unwrapped_model = unwrapped_model._orig_mod
+
+            if hasattr(unwrapped_model, "base_model"):
+                unwrapped_model = unwrapped_model.base_model.model
+
+            unwrapped_model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
             del state_dict
 
-    config.lr_scheduler.params.warmup_steps = int(
-        config.training.max_train_steps * config.lr_scheduler.params.warmup_ratio)
-    config.lr_scheduler.params.warmup_steps = int(
-        config.training.max_train_steps * config.lr_scheduler.params.warmup_ratio)
+    # Calculate batch-based steps for the scheduler
+    accumulation_steps = config.training.gradient_accumulation_steps
+    total_batch_steps = config.training.max_train_steps * accumulation_steps
+    config.lr_scheduler.params.warmup_steps = int(total_batch_steps * config.lr_scheduler.params.warmup_ratio)
 
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
         optimizer=optimizer,
-        num_training_steps=config.training.max_train_steps - global_step,
+        num_training_steps=total_batch_steps - (global_step * accumulation_steps),
         num_warmup_steps=config.lr_scheduler.params.warmup_steps,
     )
 
@@ -410,12 +490,9 @@ def main():
             pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
             pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
             image_latents = vae_model.sample(pixel_values)
-            recons_images = vae_model.batch_decode(image_latents)
             image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 54, 54)
-            recons_images = recons_images.squeeze(2)    # (b*n, 3, 432, 432)
             _, c, h, w = image_latents.shape
             image_latents = image_latents.reshape(b, n, c, h, w)
-            recons_images = recons_images.reshape(b, n, pixel_c, pixel_h, pixel_w)
         else:
             raise NotImplementedError
 
@@ -447,7 +524,7 @@ def main():
         xt = xt.reshape(b * n, c, h, w)
         t = t.reshape(b * n)
 
-        return xt, t, ut, recons_images, masks
+        return xt, t, ut, masks
     
     @torch.no_grad() 
     def prepare_action_tokens_and_labels(
@@ -501,10 +578,15 @@ def main():
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
+    
+    # Initialize loss accumulators for logging
+    accumulated_loss_flow = None
+    accumulated_loss_action = None
+    accumulation_counter = 0
 
-    for epoch in range(num_train_epochs):
-        model.train()
-        for batch in mixed_loader:
+    model.train()
+    for batch in mixed_loader:
+        with accelerator.accumulate(model):
             # print(f"batch['language_instruction']: {batch['language_instruction']}")
             text_tokens = batch['text_tokens'].to(accelerator.device)
             # text_labels = batch['text_labels'].to(accelerator.device)
@@ -521,28 +603,22 @@ def main():
                 action_positions = batch['action_positions'].to(accelerator.device)
                 domain_id = batch['domain_id'].to(accelerator.device)
             # prepare image latents and labels
-            image_latents, t, image_labels, recons_images, image_masks = prepare_latents_and_labels(pixel_values,
-                                                                                                    image_masks,
-                                                                                                    modality_positions)
+            image_latents, t, image_labels, image_masks = prepare_latents_and_labels(pixel_values,
+                                                                                        image_masks,
+                                                                                        modality_positions)
             if pred_act: 
                 action_tokens, action_labels = prepare_action_tokens_and_labels(
                     action,
                     proprio,
                     config.model.showo.time_dim,
                 )
-            # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-            # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-            # omni_mask_fn = omni_attn_mask(modality_positions)
-            # block_mask = create_block_mask(omni_mask_fn, B=text_tokens.shape[0], H=None,
-            #                                Q_LEN=preproc_config.max_seq_length,
-            #                                KV_LEN=preproc_config.max_seq_length, device=accelerator.device)
-            # or use naive omni attention mask, which is more stable
+            
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                              text_tokens.size(1),
-                                              modality_positions,
-                                              accelerator.device,
-                                              actions=action_positions if pred_act else None,
-                                              ).to(weight_type)
+                                                text_tokens.size(1),
+                                                modality_positions,
+                                                accelerator.device,
+                                                actions=action_positions if pred_act else None,
+                                                ).to(weight_type)
 
             logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
@@ -563,126 +639,126 @@ def main():
                                                 device=accelerator.device,
                                                 )
 
-            # Gather the losses across all processes for logging (if we use distributed training).
-            # avg_loss_ntp = accelerator.gather(loss_ntp.repeat(total_batch_size_per_gpu)).mean()
-            avg_loss_flow = accelerator.gather(loss_flow.repeat(total_batch_size_per_gpu)).mean()
+            # Accumulate losses for logging (averaged over gradient accumulation steps)
+            if accumulated_loss_flow is None:
+                accumulated_loss_flow = loss_flow.detach()
+            else:
+                accumulated_loss_flow += loss_flow.detach()
+
             # loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow
             if pred_act:
                 loss_action = sum(action_loss_dict.values())
-                avg_action_loss = accelerator.gather(loss_action.repeat(total_batch_size_per_gpu)).mean()
+                if accumulated_loss_action is None:
+                    accumulated_loss_action = loss_action.detach()
+                else:
+                    accumulated_loss_action += loss_action.detach()
+
                 loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * loss_action
             else:
                 loss = config.training.flow_coeff * loss_flow
-
-
             
+            
+            accumulation_counter += 1
 
-            accelerator.backward(loss.to(weight_type) / config.training.gradient_accumulation_steps)
+            accelerator.backward(loss.to(weight_type))
 
             if config.training.max_grad_norm is not None and accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
-            if (global_step + 1) % config.training.gradient_accumulation_steps == 0:
-                optimizer.step()
-                lr_scheduler.step()
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
 
-            # log gradient norm before zeroing it
-            if (
-                    accelerator.sync_gradients
-                    and (global_step + 1) % config.experiment.log_grad_norm_every == 0
-                    and accelerator.is_main_process
-            ):
-                log_grad_norm(model, accelerator, global_step + 1)
+        # Checks if the accelerator has performed an optimization step behind the scenes
+        if accelerator.sync_gradients:
+            # Calculate average loss over gradient accumulation steps
+            avg_loss_flow_accumulated = accumulated_loss_flow / accumulation_counter
+            if pred_act:
+                avg_loss_action_accumulated = accumulated_loss_action / accumulation_counter
+            
+            # Gather the averaged losses across all processes for logging (if we use distributed training).
+            # avg_loss_ntp = accelerator.gather(loss_ntp.repeat(total_batch_size_per_gpu)).mean()
+            avg_loss_flow = accelerator.gather(avg_loss_flow_accumulated.repeat(total_batch_size_per_gpu)).mean()
+            if pred_act:
+                avg_action_loss = accelerator.gather(avg_loss_action_accumulated.repeat(total_batch_size_per_gpu)).mean()
+            
+            # Reset accumulators for next gradient accumulation cycle
+            accumulated_loss_flow = None
+            accumulated_loss_action = None
+            accumulation_counter = 0
 
-            if (global_step + 1) % config.training.gradient_accumulation_steps == 0:
-                optimizer.zero_grad(set_to_none=True)
+            batch_time_m.update(time.time() - end)
+            end = time.time()
 
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-
-                batch_time_m.update(time.time() - end)
-                end = time.time()
-
-                # Log metrics
-                if (global_step + 1) % config.experiment.log_every == 0:
-                    samples_per_second_per_gpu = (
-                            config.training.gradient_accumulation_steps * total_batch_size_per_gpu / batch_time_m.val
+            # Log metrics
+            if (global_step + 1) % config.experiment.log_every == 0:
+                lr = [group["lr"] for group in optimizer.param_groups]
+                if len(lr) >= 6:
+                    logs = {
+                        # "step_loss_ntp": avg_loss_ntp.item(),
+                        "step_loss_flow": avg_loss_flow.item(),
+                        "lr_ve": lr[0],
+                        "lr_proj": lr[1],
+                        "lr_showo": lr[2],
+                    }
+                    if pred_act:
+                        act_related_lr_start_index = 4 if config.model.showo.drop_upcycling else 3
+                        logs.update({
+                            "step_loss_action": avg_action_loss.item(),
+                            "lr_act": lr[act_related_lr_start_index],
+                            "lr_soft_prompt": lr[act_related_lr_start_index+1],
+                            "lr_project_xvla": lr[act_related_lr_start_index+2],
+                        })
+                    accelerator.log(logs, step=global_step + 1)
+                    logger.info(
+                        f"Step:{global_step + 1} "
+                        # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
+                        f"Loss_FLOW:{avg_loss_flow.item():0.4f} "
+                        f"LR_ve:{lr[0]:0.6f} "
+                        f"LR_proj:{lr[1]:0.6f} "
+                        f"LR_showo:{lr[2]:0.6f}"
                     )
-                    lr = [group["lr"] for group in optimizer.param_groups]
-                    if len(lr) == 6:
-                        logs = {
-                            # "step_loss_ntp": avg_loss_ntp.item(),
-                            "step_loss_flow": avg_loss_flow.item(),
-                            "lr_ve": lr[0],
-                            "lr_proj": lr[1],
-                            "lr_showo": lr[2],
-                        }
-                        if pred_act:
-                            logs.update({
-                                "step_loss_action": avg_action_loss.item(),
-                                "lr_act": lr[3],
-                                "lr_soft_prompt": lr[4],
-                                "lr_project_xvla": lr[5],
-                            })
-                        accelerator.log(logs, step=global_step + 1)
+                    if pred_act:
                         logger.info(
-                            f"Step: {global_step + 1} "
-                            # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                            f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
-                            f"LR_ve: {lr[0]:0.6f} "
-                            f"LR_proj: {lr[1]:0.6f} "
-                            f"LR_showo: {lr[2]:0.6f}"
+                            f"Loss_ACTION: {avg_action_loss.item():0.4f} "
+                            f"LR_act: {lr[act_related_lr_start_index]:0.6f} "
+                            f"LR_soft_prompt: {lr[act_related_lr_start_index+1]:0.6f} "
+                            f"LR_project_xvla: {lr[act_related_lr_start_index+2]:0.6f} "
                         )
-                        if pred_act:
-                            logger.info(
-                                f"Loss_ACTION: {avg_action_loss.item():0.4f} "
-                                f"LR_act: {lr[3]:0.6f} "
-                                f"LR_soft_prompt: {lr[4]:0.6f} "
-                                f"LR_project_xvla: {lr[5]:0.6f} "
-                            )
-                    else:
-                        logs = {
-                            # "step_loss_ntp": avg_loss_ntp.item(),
-                            "step_loss_flow": avg_loss_flow.item(),
-                            "lr": lr[0],
-                            "samples/sec/gpu": samples_per_second_per_gpu,
-                            "data_time": data_time_m.val,
-                            "batch_time": batch_time_m.val,
-                        }
-                        accelerator.log(logs, step=global_step + 1)
-                        logger.info(
-                            f"Epoch: {epoch} "
-                            f"Step: {global_step + 1} "
-                            # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                            f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
-                            f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
-                            f"Batch (t): {batch_time_m.val:0.4f} "
-                            f"LR: {lr[0]:0.6f}"
-                        )
-                    # resetting batch / data time meters per log window
-                    batch_time_m.reset()
-                    data_time_m.reset()
+                else:
+                    logs = {
+                        # "step_loss_ntp": avg_loss_ntp.item(),
+                        "step_loss_flow": avg_loss_flow.item(),
+                        "lr_ve": lr[0],
+                        "lr_proj": lr[1],
+                        "lr_showo": lr[2],
+                    }
+                    accelerator.log(logs, step=global_step + 1)
+                    logger.info(
+                        f"Step:{global_step + 1} "
+                        # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
+                        f"Loss_FLOW:{avg_loss_flow.item():0.4f} "
+                        f"LR_ve:{lr[0]:0.6f} "
+                        f"LR_proj:{lr[1]:0.6f} "
+                        f"LR_showo:{lr[2]:0.6f}"
+                    )
+                # resetting batch / data time meters per log window
+                batch_time_m.reset()
+                data_time_m.reset()
 
-                # Save model checkpoint
-                if (global_step + 1) % config.experiment.save_every == 0:
-                    save_checkpoint(model, config, accelerator, global_step + 1)
+            # Save model checkpoint
+            if (global_step + 1) % config.experiment.save_every == 0:
+                save_checkpoint(model, config, accelerator, global_step + 1)
 
-                global_step += 1
+            global_step += 1
 
-            # Stop training if max steps is reached
-            if global_step >= config.training.max_train_steps:
-                break
-            # End for
+
+        # Stop training if max steps is reached
+        if global_step >= config.training.max_train_steps:
+            break
+        # End for
 
     accelerator.wait_for_everyone()
-
-    # Evaluate and save checkpoint at the end of training
-    save_checkpoint(model, config, accelerator, "final")
-
-    # Save the final trained checkpoint
-    if accelerator.is_main_process:
-        model = accelerator.unwrap_model(model)
-        model.save_pretrained(config.experiment.output_dir, safe_serialization=False)
 
     accelerator.end_training()
 
@@ -717,25 +793,65 @@ def save_checkpoint(model, config, accelerator, global_step):
 
     # retrieve the model on all processes for deepspeed stage 3 to work then save on one process (we are not using stage 3 yet)
     # XXX: could also make this conditional on deepspeed
-    state_dict = accelerator.get_state_dict(model)
     if accelerator.is_main_process:
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            save_path / "unwrapped_model",
-            save_function=accelerator.save,
-            state_dict=state_dict,
-            safe_serialization=False
-        )
+        # Get state_dict first before unwrapping to avoid issues
+        # manually unwrap and get state_dict
+        temp_model = model
+        if hasattr(model, 'module'):
+            temp_model = model.module
+        # Unwrap torch.compile if present
+        while hasattr(temp_model, '_orig_mod'):
+            temp_model = temp_model._orig_mod
+        state_dict = temp_model.state_dict()
+        
+        # Unwrap model manually to avoid accelerator's unwrap_model issues with torch.compile
+        unwrapped_model = model
+        # Unwrap accelerator wrapper
+        if hasattr(model, 'module'):
+            unwrapped_model = model.module
+        # Unwrap torch.compile wrapper if present
+        while hasattr(unwrapped_model, '_orig_mod'):
+            unwrapped_model = unwrapped_model._orig_mod
+        
+        # For PEFT models, we need to unwrap the base model
+        if hasattr(unwrapped_model, 'base_model'):
+            unwrapped_model = unwrapped_model.base_model.model
+        
+        # Use regular torch.save instead of accelerator.save to avoid unwrapping issues
+        def safe_save_function(obj, path):
+            """Save function that avoids accelerator's unwrapping logic"""
+            torch.save(obj, path)
+        
+        # Try to save using save_pretrained, but fall back to direct saving if it fails
+        # due to torch.compile unwrapping issues
+        try:
+            unwrapped_model.save_pretrained(
+                save_path / "unwrapped_model",
+                save_function=safe_save_function,
+                state_dict=state_dict,
+                safe_serialization=False
+            )
+        except (KeyError, AttributeError) as e:
+            # If save_pretrained fails due to unwrapping issues, save directly
+            logger.warning(f"save_pretrained failed with {e}. Saving state_dict directly...")
+            unwrapped_model_dir = save_path / "unwrapped_model"
+            unwrapped_model_dir.mkdir(parents=True, exist_ok=True)
+            # Save state_dict directly
+            safe_save_function(state_dict, unwrapped_model_dir / "pytorch_model.bin")
+            # Save config if the model has one
+            if hasattr(unwrapped_model, 'config'):
+                config_path = unwrapped_model_dir / "config.json"
+                with open(config_path, 'w') as f:
+                    json.dump(unwrapped_model.config.to_dict(), f, indent=2)
         json.dump({"global_step": global_step}, (save_path / "metadata.json").open("w+"))
         logger.info(f"Saved state to {save_path}")
+    else:
+        # On non-main processes, still need to get state_dict for synchronization
+        try:
+            _ = accelerator.get_state_dict(model)
+        except (KeyError, AttributeError):
+            pass  # Ignore errors on non-main processes
 
-
-def log_grad_norm(model, accelerator, global_step):
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grads = param.grad.detach().data
-            grad_norm = (grads.norm(p=2) / grads.numel()).item()
-            accelerator.log({"grad_norm/" + name: grad_norm}, step=global_step)
 
 
 if __name__ == "__main__":
