@@ -46,8 +46,9 @@ class DomainHandler(ABC):
             max_seq_len: int = 2048,
             image_size: int = 432,
             num_image_tokens: int = 729,
-            num_action_tokens: int = 30,
-            pred_act: bool = False
+            num_actions: int = 30,
+            len_soft_prompt: int = 32,
+            pred_act: bool = False,
             ) -> None:
         
         self.meta = meta
@@ -68,7 +69,7 @@ class DomainHandler(ABC):
             self.boa_id = showo_token_ids['boa_id'] 
             self.eoa_id = showo_token_ids['eoa_id'] 
             self.act_pad_id = showo_token_ids['act_pad_id'] 
-            self.num_action_tokens = num_action_tokens
+            self.num_action_tokens = num_actions + len_soft_prompt
         self.pred_act = pred_act
 
     @abstractmethod
