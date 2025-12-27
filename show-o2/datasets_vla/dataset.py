@@ -47,7 +47,7 @@ class InfiniteDataReader(IterableDataset):
                  text_tokenizer = None,
                  showo_token_ids = None,
                  max_seq_len: int = 1600,
-                 image_size: int = 432,
+                 image_size = 432,
                  num_image_tokens: int = 729,
                  pred_act: bool = False
                  ):
@@ -66,8 +66,14 @@ class InfiniteDataReader(IterableDataset):
             print(f"== dataset {meta['dataset_name']} with {len(meta['datalist'])} trajs")
             self.metas[meta["dataset_name"]] = meta
 
+        if isinstance(image_size, int):
+            self.image_height, self.image_width = image_size, image_size
+        else:
+            assert len(image_size) == 2
+            self.image_height, self.image_width = image_size[0], image_size[1]
+
         self.image_aug = [
-            transforms.Resize((image_size, image_size*2), interpolation=InterpolationMode.BICUBIC),
+            transforms.Resize((self.image_height, self.image_width*2), interpolation=InterpolationMode.BICUBIC),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.) \
                 if training else transforms.Lambda(lambda x: x),
             transforms.ToTensor(),

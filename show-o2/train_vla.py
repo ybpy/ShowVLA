@@ -230,6 +230,7 @@ def main():
     use_lora = config.training.get('use_lora', False)
     lr_multipler = config.training.get('lr_multipler', 1.0)
     if use_lora:
+        exclude_modules = ["time_embed"]
         suffix_of_modules_to_save = [
             "mlp.gate",
             # "mlp.experts",
@@ -237,8 +238,8 @@ def main():
             "image_embedder_und",
             "image_embedder_gen",
             "position_embedding",
-            "fusion_proj",
-            "time_embed",
+            # "fusion_proj",
+            # "time_embed",
             "diff_proj",
             "time_embed_proj",
             "diffusion_head_b",
@@ -263,10 +264,11 @@ def main():
             logger.info(f"[modules_to_save] {name}")
         
         lora_config = LoraConfig(
-            lora_alpha=64,
-            r=32,
+            lora_alpha=48,
+            r=24,
             bias="none",
             target_modules="all-linear",
+            exclude_modules=exclude_modules,
             modules_to_save=modules_to_save,
         )
         model = get_peft_model(model, lora_config)
@@ -436,23 +438,22 @@ def main():
             unwrapped_model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
             del state_dict
 
-    # Calculate batch-based steps for the scheduler
-    accumulation_steps = config.training.gradient_accumulation_steps
-    total_batch_steps = config.training.max_train_steps * accumulation_steps
-    config.lr_scheduler.params.warmup_steps = int(total_batch_steps * config.lr_scheduler.params.warmup_ratio)
+    # Calculate steps for the scheduler (based on optimization steps, not micro-steps)
+    num_training_steps = config.training.max_train_steps
+    num_warmup_steps = int(num_training_steps * config.lr_scheduler.params.warmup_ratio)
 
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
         optimizer=optimizer,
-        num_training_steps=total_batch_steps - (global_step * accumulation_steps),
-        num_warmup_steps=config.lr_scheduler.params.warmup_steps,
+        num_training_steps=num_training_steps - global_step,
+        num_warmup_steps=num_warmup_steps,
     )
 
     ##################################
     #       Prepare accelerator     #
     #################################
     logger.info("Preparing model, optimizer and dataloaders")
-    model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
+    model, optimizer = accelerator.prepare(model, optimizer)
 
     ##################################
     #             Training          #
@@ -575,14 +576,10 @@ def main():
 
         return action_tokens, action_labels
 
-    batch_time_m = AverageMeter()
-    data_time_m = AverageMeter()
-    end = time.time()
-    
-    # Initialize loss accumulators for logging
-    accumulated_loss_flow = None
-    accumulated_loss_action = None
-    accumulation_counter = 0
+
+    # Initialize loss meters for logging
+    loss_flow_m = AverageMeter()
+    loss_action_m = AverageMeter()
 
     model.train()
     for batch in mixed_loader:
@@ -639,26 +636,16 @@ def main():
                                                 device=accelerator.device,
                                                 )
 
-            # Accumulate losses for logging (averaged over gradient accumulation steps)
-            if accumulated_loss_flow is None:
-                accumulated_loss_flow = loss_flow.detach()
-            else:
-                accumulated_loss_flow += loss_flow.detach()
+            loss_flow_m.update(loss_flow.item())
 
             # loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow
             if pred_act:
                 loss_action = sum(action_loss_dict.values())
-                if accumulated_loss_action is None:
-                    accumulated_loss_action = loss_action.detach()
-                else:
-                    accumulated_loss_action += loss_action.detach()
+                loss_action_m.update(loss_action.item())
 
                 loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * loss_action
             else:
                 loss = config.training.flow_coeff * loss_flow
-            
-            
-            accumulation_counter += 1
 
             accelerator.backward(loss.to(weight_type))
 
@@ -666,37 +653,24 @@ def main():
                 accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
             optimizer.step()
-            lr_scheduler.step()
+            if accelerator.sync_gradients:
+                lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if accelerator.sync_gradients:
-            # Calculate average loss over gradient accumulation steps
-            avg_loss_flow_accumulated = accumulated_loss_flow / accumulation_counter
-            if pred_act:
-                avg_loss_action_accumulated = accumulated_loss_action / accumulation_counter
-            
-            # Gather the averaged losses across all processes for logging (if we use distributed training).
-            # avg_loss_ntp = accelerator.gather(loss_ntp.repeat(total_batch_size_per_gpu)).mean()
-            avg_loss_flow = accelerator.gather(avg_loss_flow_accumulated.repeat(total_batch_size_per_gpu)).mean()
-            if pred_act:
-                avg_action_loss = accelerator.gather(avg_loss_action_accumulated.repeat(total_batch_size_per_gpu)).mean()
-            
-            # Reset accumulators for next gradient accumulation cycle
-            accumulated_loss_flow = None
-            accumulated_loss_action = None
-            accumulation_counter = 0
-
-            batch_time_m.update(time.time() - end)
-            end = time.time()
 
             # Log metrics
             if (global_step + 1) % config.experiment.log_every == 0:
+                # 跨 GPU 汇总并计算平均 Loss
+                Loss_flow = accelerator.gather(torch.tensor(loss_flow_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
+                if pred_act:
+                    Loss_action = accelerator.gather(torch.tensor(loss_action_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
+                
                 lr = [group["lr"] for group in optimizer.param_groups]
                 if len(lr) >= 6:
                     logs = {
-                        # "step_loss_ntp": avg_loss_ntp.item(),
-                        "step_loss_flow": avg_loss_flow.item(),
+                        "Loss_flow": Loss_flow,
                         "lr_ve": lr[0],
                         "lr_proj": lr[1],
                         "lr_showo": lr[2],
@@ -704,7 +678,7 @@ def main():
                     if pred_act:
                         act_related_lr_start_index = 4 if config.model.showo.drop_upcycling else 3
                         logs.update({
-                            "step_loss_action": avg_action_loss.item(),
+                            "Loss_action": Loss_action,
                             "lr_act": lr[act_related_lr_start_index],
                             "lr_soft_prompt": lr[act_related_lr_start_index+1],
                             "lr_project_xvla": lr[act_related_lr_start_index+2],
@@ -712,23 +686,21 @@ def main():
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
                         f"Step:{global_step + 1} "
-                        # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                        f"Loss_FLOW:{avg_loss_flow.item():0.4f} "
+                        f"Loss_flow:{Loss_flow:0.4f} "
                         f"LR_ve:{lr[0]:0.6f} "
                         f"LR_proj:{lr[1]:0.6f} "
                         f"LR_showo:{lr[2]:0.6f}"
                     )
                     if pred_act:
                         logger.info(
-                            f"Loss_ACTION: {avg_action_loss.item():0.4f} "
+                            f"Loss_action: {Loss_action:0.4f} "
                             f"LR_act: {lr[act_related_lr_start_index]:0.6f} "
                             f"LR_soft_prompt: {lr[act_related_lr_start_index+1]:0.6f} "
                             f"LR_project_xvla: {lr[act_related_lr_start_index+2]:0.6f} "
                         )
                 else:
                     logs = {
-                        # "step_loss_ntp": avg_loss_ntp.item(),
-                        "step_loss_flow": avg_loss_flow.item(),
+                        "Loss_flow": Loss_flow,
                         "lr_ve": lr[0],
                         "lr_proj": lr[1],
                         "lr_showo": lr[2],
@@ -736,15 +708,13 @@ def main():
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
                         f"Step:{global_step + 1} "
-                        # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                        f"Loss_FLOW:{avg_loss_flow.item():0.4f} "
+                        f"Loss_flow:{Loss_flow:0.4f} "
                         f"LR_ve:{lr[0]:0.6f} "
                         f"LR_proj:{lr[1]:0.6f} "
                         f"LR_showo:{lr[2]:0.6f}"
                     )
-                # resetting batch / data time meters per log window
-                batch_time_m.reset()
-                data_time_m.reset()
+                loss_flow_m.reset()
+                loss_action_m.reset()
 
             # Save model checkpoint
             if (global_step + 1) % config.experiment.save_every == 0:

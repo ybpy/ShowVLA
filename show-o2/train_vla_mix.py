@@ -77,14 +77,16 @@ def main():
         split_batches=True,
     )
 
-    bs_mixed_modal = config.training.batch_size_grounding
+    bs_grounding = config.training.batch_size_grounding
+    bs_vla = config.training.batch_size_vla
 
     if "concat" in config.dataset.mixed_loader_mode:
-        raise NotImplementedError
-    else:
-        total_batch_size_per_gpu = bs_mixed_modal * config.dataset.accumulation
+        assert config.dataset.accumulation == 1, "No need to enable accumulation in mixed-dataloader!"
+        total_batch_size_per_gpu = bs_grounding + bs_vla
         total_batch_size_without_accum = total_batch_size_per_gpu * accelerator.num_processes
         total_batch_size = total_batch_size_without_accum * config.training.gradient_accumulation_steps
+    else:
+        raise NotImplementedError
 
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         accelerator.state.deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = (
@@ -410,41 +412,33 @@ def main():
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
     )
-    train_dataloader_mixed_modal = create_dataloader(dataset,
+    train_dataloader_grounding = create_dataloader(dataset,
                                                      config.training.batch_size_grounding,
                                                      dataset.collate_fn)
+    
+    # X-VLA dataloader
+    xvla_loader = create_dataloader(
+        num_workers=dataset_config.num_workers,
+        batch_size=config.training.batch_size_vla,
+        metas_path=config.training.train_metas_path,
+        num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
+        action_mode=config.xvla.action_mode,
+        training=True,
+        text_tokenizer=text_tokenizer,
+        showo_token_ids=showo_token_ids,
+        max_seq_len=preproc_config.max_vla_seq_len,
+        image_size=preproc_config.vla_image_size,
+        num_image_tokens=preproc_config.num_vla_image_tokens,
+        pred_act=pred_act,
+    )
 
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader_mixed_modal) / config.training.gradient_accumulation_steps)
-    num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
-
-    logger.info(f"len(train_dataloader_mixed_modal): {len(train_dataloader_mixed_modal)}")
-    logger.info(f"num_update_steps_per_epoch: {num_update_steps_per_epoch}")
-    logger.info(f"num_train_epochs: {num_train_epochs}")
-
-    # Combine these dataloaders into a single iterable model
+    # Combine these dataloaders into a single iterable
     mixed_loader = MixedDataLoader(
-        loader_list=[train_dataloader_mixed_modal],
+        loader_list=[train_dataloader_grounding, xvla_loader],
         samp_probs=config.dataset.samp_probs,
         accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
     )
-
-    
-    # # Iterable dataloader
-    # mixed_loader = create_dataloader(
-    #     num_workers=dataset_config.num_workers,
-    #     batch_size=config.training.batch_size_vla,
-    #     metas_path=config.training.train_metas_path,
-    #     num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
-    #     action_mode=config.xvla.action_mode,
-    #     training=True,
-    #     text_tokenizer=text_tokenizer,
-    #     showo_token_ids=showo_token_ids,
-    #     max_seq_len=preproc_config.max_vla_seq_len,
-    #     image_size=preproc_config.vla_image_size,
-    #     num_image_tokens=preproc_config.num_vla_image_tokens,
-    #     pred_act=pred_act,
-    # )
 
 
     ##################################
@@ -714,11 +708,6 @@ def main():
                 Loss_flow = accelerator.gather(torch.tensor(loss_flow_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
                 if pred_act:
                     Loss_action = accelerator.gather(torch.tensor(loss_action_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
-
-                try:
-                    epoch = global_step // num_update_steps_per_epoch
-                except:
-                    epoch = "∞"
                 
                 lr = [group["lr"] for group in optimizer.param_groups]
                 if len(lr) >= 6:
@@ -738,7 +727,6 @@ def main():
                         })
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
-                        f"Ep:{epoch} "
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
                         f"LR_ve:{lr[0]:0.6f} "
@@ -761,7 +749,6 @@ def main():
                     }
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
-                        f"Ep:{epoch} "
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
                         f"LR_ve:{lr[0]:0.6f} "

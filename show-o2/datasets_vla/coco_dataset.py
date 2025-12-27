@@ -38,9 +38,9 @@ class COCODataset(Dataset):
             metas_path,
             text_tokenizer,
             showo_token_ids,
-            max_seq_len: int = 1600,
-            image_size: int = 432,
-            num_image_tokens: int = 729,
+            max_seq_len,
+            image_size,
+            num_image_tokens,
             prob_bbox: float = 0.5,
     ) -> None:
 
@@ -58,7 +58,10 @@ class COCODataset(Dataset):
             datalist = meta['datalist']
             print(f"== [{file}] Dataset {dataset_name} with {len(datalist)} images")
 
-            self.dataset_name_2_coco_helper[dataset_name] = COCO(ann_json_path)
+            coco = COCO(ann_json_path)
+            # Remove unused parts to save memory
+            coco.dataset, coco.anns, coco.cats, coco.imgToAnns, coco.catToImgs = None, None, None, None, None
+            self.dataset_name_2_coco_helper[dataset_name] = coco
             for json_path in datalist:
                 self.all_datalist.append([dataset_name, json_path])
 
@@ -70,7 +73,11 @@ class COCODataset(Dataset):
         self.eoi_id = showo_token_ids['eoi_id']
         self.img_pad_id = showo_token_ids['img_pad_id']
         self.max_seq_len = max_seq_len
-        self.image_size = image_size
+        if isinstance(image_size, int):
+            self.image_height, self.image_width = image_size, image_size
+        else:
+            assert len(image_size) == 2
+            self.image_height, self.image_width = image_size[0], image_size[1]
         self.num_image_tokens = num_image_tokens
 
         self.image_aug = [
@@ -79,7 +86,7 @@ class COCODataset(Dataset):
         self.image_aug = transforms.Compose(self.image_aug)
         
         self.image_transform = [
-            transforms.Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC),
+            transforms.Resize((self.image_height, self.image_width), interpolation=InterpolationMode.BICUBIC),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
         ]
@@ -119,7 +126,7 @@ class COCODataset(Dataset):
         text_labels = [-100] + text_labels + [self.eos_id]
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
 
-        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"text: {text}, len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
         text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
@@ -140,7 +147,7 @@ class COCODataset(Dataset):
     def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
         dataset_name, json_path = self.all_datalist[idx]
         coco_helper = self.dataset_name_2_coco_helper[dataset_name]
-        with io.BytesIO(fileio.get(json_path)) as f: data_dict = json.load(f)
+        data_dict = json.load(open(json_path))
 
         img_path = data_dict["img_path"]
         img = Image.open(img_path).convert('RGB')
@@ -158,13 +165,13 @@ class COCODataset(Dataset):
             if tgt_img is None:
                 use_bbox = False
             else:
-                text = f"Mark instance(s) of \"{category}\" in the image with {bbox_color_name} bounding box."
+                text = f"Mark all {category} in the image with {bbox_color_name} bounding box. Image with marked {category}:"
         
         if not use_bbox:
             mask_color_name = np.random.choice(list(self.mask_colors.keys()))
             mask_color_rgb = self.mask_colors[mask_color_name]
             tgt_img = get_img_with_segment_mask(img, instances, coco_helper, mask_color_rgb)
-            text = f"Segment instance(s) of \"{category}\" in the image with {mask_color_name} mask."
+            text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
 
         # vis = tgt_img
         # text_clean = text.replace('(', '').replace(')', '').replace('\"', '')
@@ -215,11 +222,11 @@ if __name__ == '__main__':
     )
 
     dataset = COCODataset(
-        metas_path="/home/hyx/datasets/coco/meta",
+        metas_path="./meta_coco_data",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=560,
-        image_size=256,
+        image_size=(384, 320),
         num_image_tokens=256+1,
         prob_bbox=0.5,
     )
