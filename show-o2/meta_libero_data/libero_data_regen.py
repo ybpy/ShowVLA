@@ -59,6 +59,26 @@ def encode_frames_to_jpeg_bytes(frames):
         encoded[idx] = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
     return encoded
 
+def combine_main_wrist_views(main_img, wrist_img,
+        main_tgt_size=(224, 320), wrist_tgt_size=(112, 160), comb_size=(336, 320), wrist_at_left=False):
+    """ Combine the main view image and the wrist view image into an image. """
+    assert comb_size[0] == main_tgt_size[0] + wrist_tgt_size[0]
+    assert comb_size[1] == main_tgt_size[1]
+
+    # Resize
+    main_img = np.array(Image.fromarray(main_img).resize((main_tgt_size[1], main_tgt_size[0]), Image.BILINEAR))
+    wrist_img = np.array(Image.fromarray(wrist_img).resize((wrist_tgt_size[1], wrist_tgt_size[0]), Image.BILINEAR))
+
+    comb_img = np.zeros((comb_size[0], comb_size[1], 3), dtype=np.uint8)
+    comb_img[:main_tgt_size[0]] = main_img
+    if wrist_at_left:
+        comb_img[main_tgt_size[0]: , :wrist_tgt_size[1]] = wrist_img
+    else:
+        comb_img[main_tgt_size[0]: , wrist_tgt_size[1]:] = wrist_img
+
+    return comb_img
+
+
 
 IMAGE_RESOLUTION = 256
 
@@ -96,7 +116,8 @@ def main(args):
     meta_json = {
         "dataset_name": args.libero_task_suite,
         "language_instruction_key": "language_instruction",
-        "observation_key": ['rgb_main', 'rgb_wrist'],
+        # "observation_key": ['rgb_main', 'rgb_wrist'],
+        "observation_key": ['rgb_comb'],
         "num_ep": 0,
         "datalist": []
     }
@@ -167,16 +188,21 @@ def main(args):
 
             # At end of episode, save replayed trajectories to new HDF5 files (only keep successes)
             if done:
-                rgb_main_bytes = encode_frames_to_jpeg_bytes(agentview_images)
-                rgb_wrist_bytes = encode_frames_to_jpeg_bytes(eye_in_hand_images)
+                # rgb_main_bytes = encode_frames_to_jpeg_bytes(agentview_images)
+                # rgb_wrist_bytes = encode_frames_to_jpeg_bytes(eye_in_hand_images)
+
+                comb_images = [combine_main_wrist_views(x, y) for x, y in zip(
+                    agentview_images, eye_in_hand_images)]
+                rgb_comb_bytes = encode_frames_to_jpeg_bytes(comb_images)
 
                 str_dtype = h5py.string_dtype(encoding="utf-8")
 
                 with h5py.File(new_data_path, "w") as h5_file:
                     h5_file.create_dataset("language_instruction", data=task_description, dtype=str_dtype)
                     vlen_uint8 = h5py.vlen_dtype(np.dtype("uint8"))
-                    h5_file.create_dataset("rgb_main", data=rgb_main_bytes, dtype=vlen_uint8)
-                    h5_file.create_dataset("rgb_wrist", data=rgb_wrist_bytes, dtype=vlen_uint8)
+                    # h5_file.create_dataset("rgb_main", data=rgb_main_bytes, dtype=vlen_uint8)
+                    # h5_file.create_dataset("rgb_wrist", data=rgb_wrist_bytes, dtype=vlen_uint8)
+                    h5_file.create_dataset("rgb_comb", data=rgb_comb_bytes, dtype=vlen_uint8)
                     h5_file.create_dataset("abs_action_6d", data=abs_action_6d)
 
                 meta_json["datalist"].append(new_data_path)
