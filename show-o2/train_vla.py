@@ -187,7 +187,7 @@ def main():
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 
     # Drop-upcycling if needed
-    drop_upcycling = config.training.get('config.model.showo.drop_upcycling', False)
+    drop_upcycling = config.model.showo.get('drop_upcycling', False)
     if drop_upcycling:
         logger.info("Dropping upcycling modules...")
         # Create MoE config from yaml settings
@@ -387,7 +387,7 @@ def main():
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
-        num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
+        num_actions=config.xvla.num_actions,
         action_mode=config.xvla.action_mode,
         training=True,
         text_tokenizer=text_tokenizer,

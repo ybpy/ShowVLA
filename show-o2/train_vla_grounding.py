@@ -429,23 +429,6 @@ def main():
         mode=config.dataset.mixed_loader_mode
     )
 
-    
-    # # Iterable dataloader
-    # mixed_loader = create_dataloader(
-    #     num_workers=dataset_config.num_workers,
-    #     batch_size=config.training.batch_size_vla,
-    #     metas_path=config.training.train_metas_path,
-    #     num_actions=config.xvla.num_actions+config.model.showo.get('len_soft_prompts', 32),
-    #     action_mode=config.xvla.action_mode,
-    #     training=True,
-    #     text_tokenizer=text_tokenizer,
-    #     showo_token_ids=showo_token_ids,
-    #     max_seq_len=preproc_config.max_vla_seq_len,
-    #     image_size=preproc_config.vla_image_size,
-    #     num_image_tokens=preproc_config.num_vla_image_tokens,
-    #     pred_act=pred_act,
-    # )
-
 
     ##################################
     #         MODEL RESUME          #
