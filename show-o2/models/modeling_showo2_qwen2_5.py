@@ -518,9 +518,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
             if actions is not None:
                 assert proprio is not None, "proprioception input is required when actions are provided"
-                # t_action = (torch.rand(1, device=actions.device) + torch.arange(B, device=actions.device) / B) % (1 - 1e-5)
-
                 noisy_actions = torch.randn_like(actions) * t_action.view(-1, 1, 1) + actions * (1 - t_action).view(-1, 1, 1)
+                # zero-out gripper channels in actions/proprio
+                noisy_actions[..., self.GRIPPER_IDX] = 0.0
+                proprio[..., self.GRIPPER_IDX] = 0.0
 
                 def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
                     """
