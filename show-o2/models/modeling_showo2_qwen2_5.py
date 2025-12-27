@@ -26,6 +26,19 @@ from .modules import DiffusionHeadConfig
 from .modules import ModulatedAttentionBlock, RMSNorm, PatchEmbed, TimestepEmbedder, FinalLayer
 from .qwen2 import Qwen2ForCausalLM
 
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+import logging
+import traceback
+from typing import Any, Dict
+import json_numpy
+import cv2
+import numpy as np
+from PIL import Image
+import math
+from models import omni_attn_mask_naive
+
 class DomainAwareLinear(nn.Module):
     """
     Linear layer with domain-conditioned parameters (per-sample).
@@ -916,3 +929,215 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         generated_text = tokenizer.decode(output_tokens, skip_special_tokens=False)
 
         return generated_text
+    
+    # =============================== FastAPI service =============================
+    def _build_app(self, config, vae_model, text_tokenizer, showo_token_ids):
+        """
+        Minimal FastAPI app for ShowVLA inference.
+        """
+        if self.app is not None:
+            return
+
+        app = FastAPI()
+
+        device = vae_model.device
+        dtype = vae_model.dtype
+
+        pad_id = text_tokenizer.pad_token_id
+        bos_id = showo_token_ids['bos_id']
+        eos_id = showo_token_ids['eos_id']
+        boi_id = showo_token_ids['boi_id']
+        eoi_id = showo_token_ids['eoi_id']
+        img_pad_id = showo_token_ids['img_pad_id']
+        max_seq_len = config.preproc_config.max_vla_seq_len
+        image_size = config.preproc_config.vla_image_size
+        num_image_tokens = config.preproc_config.num_vla_image_tokens
+
+        boa_id = showo_token_ids['boa_id']
+        eoa_id = showo_token_ids['eoa_id']
+        act_pad_id = showo_token_ids['act_pad_id']
+        num_action_tokens = config.xvla.num_actions
+        action_dim = config.model.showo.action_dim
+
+        @app.post("/act")
+        def act(payload: Dict[str, Any]):
+            try:
+                def prepare_image_latents(pixel_values, num_obs_img=1):
+                    b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
+                    if config.model.vae_model.type == 'wan21':
+                        # (b, n, 3, 256, 256)
+                        pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
+                        pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
+                        image_latents = vae_model.sample(pixel_values)
+                        image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
+                        _, c, h, w = image_latents.shape
+                        image_latents = image_latents.reshape(b, n, c, h, w)
+                    else:
+                        raise NotImplementedError
+
+                    xt_list = []
+                    for i in range(b):
+                        for j in range(n):
+                            is_obs_img = j < num_obs_img
+                            # x0->noise x1->image
+                            x1 = image_latents[i][j]
+                            
+                            xt = x1 if is_obs_img else torch.randn_like(x1)
+                            
+                            xt_list.append(xt)
+
+                    xt = torch.cat(xt_list, dim=0)
+                    xt = xt.reshape(b * n, c, h, w)
+                    return xt
+
+                def prepare_action_tokens(actions, proprio, t, time_dim=config.model.showo.get('time_embed_dim', 32)):
+                    """actions: [B, num_action_tokens, action_dim], proprio: [B, proprio_dim], t: [B]"""
+                    B = actions.shape[0]  # batch_size = 1 for inference
+                    
+                    # x0->action, x1->noise
+                    noisy_actions = torch.randn_like(actions) * t.view(-1, 1, 1) + actions * (1 - t).view(-1, 1, 1)
+                    
+                    def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
+                        """Create sinusoidal timestep embeddings."""
+                        half = dim // 2
+                        freqs = torch.exp(
+                            -math.log(max_period)
+                            * torch.arange(start=0, end=half, dtype=dtype, device=device)
+                            / half
+                        )
+                        args = t[:, None] * freqs[None]
+                        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+                        if dim % 2 == 1:
+                            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+                        return embedding
+                    
+                    # create time embeddings and expand to sequence length
+                    time_emb = timestep_embedding(t)  # [1, time_dim]
+                    time_tokens = time_emb.unsqueeze(1).expand(B, num_action_tokens, time_emb.shape[-1])
+                    # expand proprio to sequence length
+                    proprio_tokens = proprio.unsqueeze(1).expand(B, num_action_tokens, proprio.shape[-1])
+
+                    action_tokens = torch.cat([noisy_actions, proprio_tokens, time_tokens], dim=-1)
+                    
+                    return action_tokens
+                
+                # Load image
+                image = json_numpy.loads(payload["image0"])
+                if isinstance(image, np.ndarray):
+                    if image.ndim == 1:
+                        image = cv2.imdecode(image, cv2.IMREAD_COLOR)
+                    image = Image.fromarray(image)
+                elif isinstance(image, (list, tuple)):
+                    image = Image.fromarray(np.array(image))
+                elif isinstance(image, str):
+                    image = Image.open(image)
+                if not image:
+                    return JSONResponse({"error": "No valid images found."}, status_code=400)
+                
+                # Convert PIL.Image to tensor format for prepare_image_latents
+                image_curr = np.array(image)  # (256, 256, 3)
+                image_curr = image_curr.astype(np.float32) / 255.0
+                image_curr = torch.from_numpy(image_curr).permute(2, 0, 1)  # (3, 256, 256)
+                image_future = torch.randn_like(image_curr)  # (3, 256, 256)
+                pixel_values = torch.stack([image_curr, image_future], dim=0)  # (2, 3, 256, 256)
+                pixel_values = pixel_values.unsqueeze(0)  # (1, 2, 3, 256, 256)
+                pixel_values = pixel_values.to(device)
+                
+                # Get image latents
+                image_latents = prepare_image_latents(pixel_values)
+
+                # Formulate text tokens
+                text_tokens = []
+                modality_positions = []
+                action_positions = []
+
+                cur_len = 1 # bos token
+
+                # One observation image
+                text_tokens.extend([boi_id] + [img_pad_id] * num_image_tokens + [eoi_id])
+                # +1 for one <|img_start|> token
+                modality_positions.append((cur_len + 1, num_image_tokens))
+                cur_len = cur_len + 1 + num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
+
+                # Language command
+                text = payload["language_instruction"]
+                if text.endswith("."):
+                    text = text + " Future image:"
+                elif text[-1].isalpha():
+                    text = text + ". Future image:"
+                else:
+                    raise ValueError(f"Unsupported Language Instruction: {text}")
+                
+                lang_tokens = text_tokenizer.encode(text, add_special_tokens=False, truncation=False).input_ids
+                text_tokens.extend(lang_tokens)
+                cur_len = cur_len + len(lang_tokens)
+
+                # One future image
+                text_tokens.extend([boi_id] + [img_pad_id] * num_image_tokens + [eoi_id])
+                # +1 for one <|img_start|> token
+                modality_positions.append((cur_len + 1, num_image_tokens))
+                cur_len = cur_len + 1 + num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
+
+                # Future action sequence to predict
+                text_tokens.extend([boa_id] + [act_pad_id] * num_action_tokens + [eoa_id])
+                action_positions.append((cur_len + 1, num_action_tokens))
+                cur_len = cur_len + 1 + num_action_tokens + 1  # +2 to include <|act_start|> and <|act_end|>
+
+                text_tokens = [bos_id] + text_tokens + [eos_id]
+
+                assert len(text_tokens) <= max_seq_len, f"len(text_tokens): {len(text_tokens)}, max_seq_len: {max_seq_len}"
+                text_tokens = text_tokens + [pad_id] * (max_seq_len - len(text_tokens))
+                text_tokens = torch.tensor(text_tokens).unsqueeze(0).to(device) # (1, seq_len)
+
+                modality_positions = torch.tensor(modality_positions).unsqueeze(0).to(device) # (1, num_modalities, 2)
+                action_positions = torch.tensor(action_positions).unsqueeze(0).to(device) # (1, num_action_segments, 2)
+
+                # Construct attention mask
+                block_mask = omni_attn_mask_naive(text_tokens.size(0),
+                                                  text_tokens.size(1),
+                                                  modality_positions,
+                                                  device,
+                                                  actions=action_positions,
+                                                  ).to(dtype)
+                
+                # Load steps, proprio, domain_id
+                steps = int(payload.get("steps", 10))
+                steps = max(1, int(steps)).to(device)
+                proprio = torch.as_tensor(np.asarray(json_numpy.loads(payload["proprio"]))).to(device=device, dtype=dtype)
+                proprio = proprio.unsqueeze(0)
+                domain_id = torch.tensor([int(payload["domain_id"])]).to(device)
+                domain_id = domain_id.unsqueeze(0)
+                actions = torch.zeros((text_tokens.size(0), num_action_tokens, action_dim), device=device, dtype=dtype)
+
+                # Inference
+                # Denoising loop
+                for i in range(steps, 0, -1):
+                    t = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
+                    action_tokens = prepare_action_tokens(actions=actions, proprio=proprio, t=t)
+                    logits, v_pred_, actions = self(text_tokens=text_tokens,
+                                                    image_latents=image_latents,
+                                                    action_tokens=action_tokens.to(dtype),
+                                                    t=t.to(dtype),
+                                                    attention_mask=block_mask,
+                                                    modality_positions=modality_positions,
+                                                    action_positions=action_positions,
+                                                    domain_id=domain_id,
+                                                    max_seq_len=max_seq_len,
+                                                   )
+                actions = actions.squeeze(0).tolist()
+                
+                return JSONResponse({"action": actions})
+
+            except Exception:
+                logging.error(traceback.format_exc())
+                return JSONResponse({"error": "Request failed"}, status_code=400)
+
+        self.app = app
+    
+    def run(self, config, vae_model, text_tokenizer, showo_token_ids, host: str = "0.0.0.0", port: int = 8000):
+        """
+        Launch the FastAPI service.
+        """
+        self._build_app(config, vae_model, text_tokenizer, showo_token_ids)
+        assert self.app is not None
+        uvicorn.run(self.app, host=host, port=port)
