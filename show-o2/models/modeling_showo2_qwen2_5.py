@@ -1020,8 +1020,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     else:
                         raise NotImplementedError
 
-                    t = torch.ones(b, n)
+                    t = torch.ones(b, n, dtype=dtype, device=device)
                     t[:, -1] = 0.0
+                    t = t.reshape(-1)
+
                     xt_list = []
                     for i in range(b):
                         for j in range(n):
@@ -1060,7 +1062,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 pixel_values = pixel_values.to(device)
                 
                 # Get image latents
-                image_latents, t = prepare_image_latents(pixel_values)
+                image_latents, t_img = prepare_image_latents(pixel_values)
 
                 # Formulate text tokens
                 text_tokens = []
@@ -1118,7 +1120,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 
                 # Load steps, proprio, domain_id
                 steps = int(payload.get("steps", 10))
-                steps = max(1, int(steps)).to(device)
+                steps = max(1, steps)
                 proprio = torch.as_tensor(np.asarray(json_numpy.loads(payload["proprio"]))).to(device=device, dtype=dtype)
                 proprio = proprio.unsqueeze(0)
                 domain_id = torch.tensor([int(payload["domain_id"])]).to(device)
@@ -1127,11 +1129,12 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
                 # Inference
                 # Denoising loop
+                dt = 1.0 / steps
                 for i in range(steps, 0, -1):
                     t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
                     logits, v_pred_, actions = self.forward(text_tokens=text_tokens,
                                                     image_latents=image_latents,
-                                                    t=t.to(dtype),
+                                                    t=t_img,
                                                     attention_mask=block_mask,
                                                     modality_positions=modality_positions,
                                                     domain_id=domain_id,
@@ -1142,6 +1145,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                                     action_positions=action_positions,
                                                     t_action=t_action,
                                                    )
+                    # Update image_latents and t_img
+                    image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
+                    t_img[:, 1:] = (t_img[:, 1:] + dt).clamp(0, 1)
+                    
                 actions = actions.squeeze(0).tolist()
                 
                 return JSONResponse({"action": actions})
