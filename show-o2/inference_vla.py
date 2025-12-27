@@ -19,10 +19,16 @@ from PIL import Image
 import wandb
 import torch
 from tqdm import tqdm
-from accelerate.logging import get_logger
+import logging
 from models import Showo2Qwen2_5, omni_attn_mask, omni_attn_mask_naive
 from models.misc import prepare_gen_input, get_text_tokenizer, get_weight_type
-from utils import get_config, flatten_omega_conf, denorm, get_hyper_params, path_to_llm_name, load_state_dict
+from utils import get_config, flatten_omega_conf, denorm, get_hyper_params, \
+    path_to_llm_name, load_state_dict, load_xvla_modules, replace_model_parameters, remove_trailing_digits
+
+from omegaconf import OmegaConf
+from transformers import Qwen2MoeConfig
+from peft import LoraConfig, get_peft_model
+
 from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 import numpy as np
@@ -34,7 +40,8 @@ if torch.cuda.is_available():
 
 from transport import Sampler, create_transport
 
-logger = get_logger(__name__, log_level="INFO")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
 
@@ -67,16 +74,128 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # Initialize Show-o model
+    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
-                                                         add_return_act_token_ids=False)
+                                                         add_return_act_token_ids=pred_act)
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     print(config.model.showo)
     model = Showo2Qwen2_5(**config.model.showo).to(device)
-    state_dict = load_state_dict(config.model_path)
-    model.load_state_dict(state_dict)
+    # Drop-upcycling if needed
+    if config.model.showo.drop_upcycling:
+        logger.info("Dropping upcycling modules...")
+        # Create MoE config from yaml settings
+        config.model.showo.moe_config.vocab_size = config.model.showo.llm_vocab_size
+        moe_config_dict = OmegaConf.to_container(config.model.showo.moe_config, resolve=True)
+        target_config = Qwen2MoeConfig(**moe_config_dict)
+        model.showo = replace_model_parameters(
+            logger=logger,
+            source_model=model.showo,
+            target_config=target_config,
+            num_experts=config.model.showo.moe_config.num_experts,
+            num_layers=config.model.showo.moe_config.num_hidden_layers,
+            seed=config.training.seed,
+            init_method=config.model.showo.init_method,
+            ffn_init_ratio=config.model.showo.ffn_init_ratio,
+        ).to(device)
+        logger.info("Drop-upcycling completed. Model converted to MoE architecture.")
+    
+    # Load XVLA action modules
+    xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
+    if xvla_checkpoint is not None and config.model.showo.xvla_hidden_size is not None:
+        logger.info("Loading XVLA action modules...")
+        success = load_xvla_modules(
+            logger,
+            model, 
+            xvla_checkpoint,
+            module_names=config.model.showo.get('xvla_modules_to_load', 
+                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub']),
+            source_prefix=config.model.showo.get('source_prefix', 'transformer'),
+            target_prefix=config.model.showo.get('target_prefix', None),
+        )
+        if not success:
+            logger.error("Failed to load XVLA modules! Please check:")
+        else:
+            logger.info("XVLA action modules loaded successfully!")
+
+    use_lora = config.training.get('use_lora', False)
+    lr_multipler = config.training.get('lr_multipler', 1.0)
+    if use_lora:
+        exclude_modules = ["time_embed"]
+        suffix_of_modules_to_save = [
+            "mlp.gate",
+            # "mlp.experts",
+            "lm_head",
+            "image_embedder_und",
+            "image_embedder_gen",
+            "position_embedding",
+            # "fusion_proj",
+            # "time_embed",
+            "diff_proj",
+            "time_embed_proj",
+            "diffusion_head_b",
+        ]
+        modules_to_save = ["norm"]
+        if config.model.showo.xvla_hidden_size is not None:
+            modules_to_save = [
+                "project_xvla_encode",
+                "project_xvla_decode",
+                "pos_emb",
+                "norm",
+                "action_encoder",
+                "action_decoder",
+                "soft_prompt_hub",
+            ]
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
+                continue
+            if any((name.endswith(x) or remove_trailing_digits(name).endswith(x)) for x in suffix_of_modules_to_save): 
+                modules_to_save.append(name)
+        for name in modules_to_save:
+            logger.info(f"[modules_to_save] {name}")
+        
+        lora_config = LoraConfig(
+            lora_alpha=48,
+            r=24,
+            bias="none",
+            target_modules="all-linear",
+            exclude_modules=exclude_modules,
+            modules_to_save=modules_to_save,
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+
+
+    use_compile = config.training.get('use_compile', True)
+    compile_mode = config.training.get('compile_mode', "default")
+    if use_compile:
+        try:
+            if hasattr(torch, "compile"):
+                compile_kwargs = {"mode": compile_mode}
+                model = torch.compile(model, **compile_kwargs)
+                logger.info(f"Enabled torch.compile with mode={compile_mode}")
+            else:
+                logger.warning("torch.compile is unavailable in the installed torch version.")
+        except Exception as exc:
+            logger.warning(f"Failed to enable torch.compile: {exc}. Continuing without compilation.")
+            use_compile = False
+    
+
+    """ Loading Model Checkpoint """
+    state_dict = torch.load(config.model_path, map_location="cpu")
+    # Unwrap model manually to match the state_dict structure
+    unwrapped_model = model
+    while hasattr(unwrapped_model, "_orig_mod"):
+        unwrapped_model = unwrapped_model._orig_mod
+    if hasattr(unwrapped_model, "base_model"):
+        unwrapped_model = unwrapped_model.base_model.model
+    unwrapped_model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
+    del state_dict
+    """ Merge Lora """
+    model = model.merge_and_unload()
+
 
     model.to(weight_type)
     model.eval()
@@ -220,7 +339,7 @@ if __name__ == '__main__':
 
         texts = batch['language_instruction']
         text_tokens = batch['text_tokens'].to(device)
-        # text_labels = batch['text_labels'].to(accelerator.device)
+        # text_labels = batch['text_labels'].to(device)
         # b n c h w
         pixel_values = batch['images'].to(device).to(weight_type)
 
@@ -279,12 +398,19 @@ if __name__ == '__main__':
         obs_images = pixel_values[:, 0]
         obs_images = denorm(obs_images)
 
-        print(f"obs_images: {obs_images.shape}")
-        print(f"future_images: {future_images.shape}")
+        gt_images = pixel_values[:, 1]
+        gt_images = denorm(gt_images)
 
-        for i, (text, obs_img, future_img) in enumerate(zip(texts, obs_images, future_images)):
-            combine_img = np.concatenate([obs_img, future_img], axis=1)
-            combine_img = Image.fromarray(combine_img)
-            combine_img.save(f"demo{batch_idx}_{text}.png")
+        for i, (text, obs_img, future_img, gt_img) in enumerate(zip(texts, obs_images, future_images, gt_images)):
+            # combine_img = np.concatenate([obs_img, future_img, gt_img], axis=1)
+            # combine_img = Image.fromarray(combine_img)
+            # combine_img.save(f"demo{batch_idx}_{text}.png")
+
+            obs_img = Image.fromarray(obs_img)
+            future_img = Image.fromarray(future_img)
+            gt_img = Image.fromarray(gt_img)
+            obs_img.save(f"demo{batch_idx}_{text}_obs.png")
+            future_img.save(f"demo{batch_idx}_{text}_future.png")
+            gt_img.save(f"demo{batch_idx}_{text}_gt.png")
         
         batch_idx += 1
