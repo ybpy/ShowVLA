@@ -549,6 +549,7 @@ def main():
                 action_positions = batch['action_positions'].to(accelerator.device)
                 domain_id = batch['domain_id'].to(accelerator.device)
                 action_labels = actions.clone().to(accelerator.device)
+                t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
             # prepare image latents and labels
             image_latents, t, image_labels, image_masks = prepare_latents_and_labels(pixel_values,
                                                                                         image_masks,
@@ -561,7 +562,6 @@ def main():
                                                 actions=action_positions if pred_act else None,
                                                 ).to(weight_type)
 
-            t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
             logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
                                                 t=t.to(weight_type),
@@ -578,10 +578,9 @@ def main():
                                                 device=accelerator.device,
                                                 actions=actions if pred_act else None,
                                                 proprio=proprio if pred_act else None,
-                                                time_dim=config.model.showo.time_dim,
                                                 action_labels=action_labels if pred_act else None,
                                                 action_positions=action_positions if pred_act else None,
-                                                t_action=t_action.to(weight_type),
+                                                t_action=t_action.to(weight_type) if pred_act else None,
                                                 )
 
             loss_flow_m.update(loss_flow.item())

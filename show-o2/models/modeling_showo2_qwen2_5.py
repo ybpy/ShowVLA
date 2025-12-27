@@ -39,6 +39,38 @@ from PIL import Image
 import math
 from models import omni_attn_mask_naive
 
+
+def timestep_embedding(t: torch.Tensor, dim: int = 32, max_period: int = 100) -> torch.Tensor:
+    """
+    Create sinusoidal timestep embeddings.
+
+    Parameters
+    ----------
+    t : torch.Tensor
+        Shape [B]. Each element is a timestep index, may be fractional.
+    dim : int
+        Dimensionality of the output embedding.
+    max_period : int, default=100
+        Controls the minimum frequency of the sinusoids.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape [B, dim]. Sinusoidal embeddings.
+    """
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period)
+        * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
+        / half
+    )
+    args = t[:, None] * freqs[None]
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2 == 1:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    return embedding
+
+
 class DomainAwareLinear(nn.Module):
     """
     Linear layer with domain-conditioned parameters (per-sample).
@@ -390,17 +422,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             self,
             text_tokens=None,
             image_latents=None,
-            # action_tokens=None, 
             t=None,
             attention_mask=None,
             text_masks=None,
             image_masks=None,
-            # action_masks=None,
             text_labels=None,
             image_labels=None,
-            # action_labels=None,
             modality_positions=None,
-            # action_positions=None,
             domain_id=None,
             first_frame_as_cond=False,
             only_denoise_last_image=False,
@@ -410,7 +438,6 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             device='cuda:0',
             actions=None,
             proprio=None,
-            time_dim=32,
             action_labels=None,
             action_positions=None,
             t_action=None,
@@ -522,36 +549,6 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # zero-out gripper channels in actions/proprio
                 noisy_actions[..., self.GRIPPER_IDX] = 0.0
                 proprio[..., self.GRIPPER_IDX] = 0.0
-
-                def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
-                    """
-                    Create sinusoidal timestep embeddings.
-
-                    Parameters
-                    ----------
-                    t : torch.Tensor
-                        Shape [B]. Each element is a timestep index, may be fractional.
-                    dim : int
-                        Dimensionality of the output embedding.
-                    max_period : int, default=100
-                        Controls the minimum frequency of the sinusoids.
-
-                    Returns
-                    -------
-                    torch.Tensor
-                        Shape [B, dim]. Sinusoidal embeddings.
-                    """
-                    half = dim // 2
-                    freqs = torch.exp(
-                        -math.log(max_period)
-                        * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
-                        / half
-                    )
-                    args = t[:, None] * freqs[None]
-                    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-                    if dim % 2 == 1:
-                        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-                    return embedding
 
                 time_emb = timestep_embedding(t_action)
                 time_tokens = time_emb.unsqueeze(1).expand(B, actions.shape[1], time_emb.shape[-1])
@@ -1003,9 +1000,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         boa_id = showo_token_ids['boa_id']
         eoa_id = showo_token_ids['eoa_id']
         act_pad_id = showo_token_ids['act_pad_id']
-        num_action_tokens = config.xvla.num_actions
+        num_actions = config.xvla.num_actions
+        num_action_tokens = config.xvla.num_actions + config.model.showo.len_soft_prompts
         action_dim = config.model.showo.action_dim
-        time_dim = config.model.showo.time_dim
 
         @app.post("/act")
         def act(payload: Dict[str, Any]):
@@ -1057,7 +1054,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 image_curr = np.array(image)  # (256, 256, 3)
                 image_curr = image_curr.astype(np.float32) / 255.0
                 image_curr = torch.from_numpy(image_curr).permute(2, 0, 1)  # (3, 256, 256)
-                image_future = torch.randn_like(image_curr)  # (3, 256, 256)
+                image_future = torch.zeros_like(image_curr)  # (3, 256, 256)
                 pixel_values = torch.stack([image_curr, image_future], dim=0)  # (2, 3, 256, 256)
                 pixel_values = pixel_values.unsqueeze(0)  # (1, 2, 3, 256, 256)
                 pixel_values = pixel_values.to(device)
@@ -1126,14 +1123,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 proprio = proprio.unsqueeze(0)
                 domain_id = torch.tensor([int(payload["domain_id"])]).to(device)
                 domain_id = domain_id.unsqueeze(0)
-                actions = torch.zeros((text_tokens.size(0), num_action_tokens, action_dim), device=device, dtype=dtype)
+                actions = torch.zeros((text_tokens.size(0), num_actions, action_dim), device=device, dtype=dtype)
 
                 # Inference
                 # Denoising loop
                 for i in range(steps, 0, -1):
                     t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
-                    # action_tokens = prepare_action_tokens(actions=actions, proprio=proprio, t=t)
-                    logits, v_pred_, actions = self(text_tokens=text_tokens,
+                    logits, v_pred_, actions = self.forward(text_tokens=text_tokens,
                                                     image_latents=image_latents,
                                                     t=t.to(dtype),
                                                     attention_mask=block_mask,
@@ -1143,7 +1139,6 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                                     device=device,
                                                     actions=actions,
                                                     proprio=proprio,
-                                                    time_dim=time_dim,
                                                     action_positions=action_positions,
                                                     t_action=t_action,
                                                    )

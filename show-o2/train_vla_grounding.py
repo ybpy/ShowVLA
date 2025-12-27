@@ -574,56 +574,6 @@ def main():
         t = t.reshape(b * n)
 
         return xt, t, ut, masks
-    
-    @torch.no_grad() 
-    def prepare_action_tokens_and_labels(
-            actions,
-            proprio,
-            time_dim=32,
-    ):
-        action_labels = actions.clone()
-        B = actions.shape[0] 
-        t = (torch.rand(1, device=actions.device) + torch.arange(B, device=actions.device) / B) % (1 - 1e-5)
-
-        noisy_actions = torch.randn_like(actions) * t.view(-1, 1, 1) + actions * (1 - t).view(-1, 1, 1)
-
-        def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
-            """
-            Create sinusoidal timestep embeddings.
-
-            Parameters
-            ----------
-            t : torch.Tensor
-                Shape [B]. Each element is a timestep index, may be fractional.
-            dim : int
-                Dimensionality of the output embedding.
-            max_period : int, default=100
-                Controls the minimum frequency of the sinusoids.
-
-            Returns
-            -------
-            torch.Tensor
-                Shape [B, dim]. Sinusoidal embeddings.
-            """
-            half = dim // 2
-            freqs = torch.exp(
-                -math.log(max_period)
-                * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
-                / half
-            )
-            args = t[:, None] * freqs[None]
-            embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-            if dim % 2 == 1:
-                embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-            return embedding
-
-        time_emb = timestep_embedding(t)
-        time_tokens = time_emb.unsqueeze(1).expand(B, actions.shape[1], time_emb.shape[-1])
-        proprio_tokens = proprio.unsqueeze(1).expand(B, actions.shape[1], proprio.shape[-1])
-        action_tokens = torch.cat([noisy_actions, proprio_tokens, time_tokens], dim=-1)
-
-        return action_tokens, action_labels
-
 
     # Initialize loss meters for logging
     loss_flow_m = AverageMeter()
@@ -642,21 +592,16 @@ def main():
             image_masks = batch['image_masks'].to(accelerator.device)
             modality_positions = batch['modality_positions'].to(accelerator.device)
             if pred_act:
-                action = batch['action'].to(accelerator.device).to(weight_type)
+                actions = batch['action'].to(accelerator.device).to(weight_type)
                 proprio = batch['proprio'].to(accelerator.device).to(weight_type)
-                action_masks = batch['action_masks'].to(accelerator.device)
                 action_positions = batch['action_positions'].to(accelerator.device)
                 domain_id = batch['domain_id'].to(accelerator.device)
+                action_labels = actions.clone().to(accelerator.device)
+                t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
             # prepare image latents and labels
             image_latents, t, image_labels, image_masks = prepare_latents_and_labels(pixel_values,
                                                                                         image_masks,
                                                                                         modality_positions)
-            if pred_act: 
-                action_tokens, action_labels = prepare_action_tokens_and_labels(
-                    action,
-                    proprio,
-                    config.model.showo.time_dim,
-                )
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),
@@ -667,7 +612,6 @@ def main():
 
             logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
-                                                action_tokens=action_tokens.to(weight_type) if pred_act else None,
                                                 t=t.to(weight_type),
                                                 attention_mask=block_mask,
                                                 text_masks=text_masks,
@@ -675,13 +619,16 @@ def main():
                                                 # action_masks=action_masks,
                                                 # text_labels=text_labels,
                                                 image_labels=image_labels,
-                                                action_labels=action_labels if pred_act else None,
                                                 modality_positions=modality_positions,
-                                                action_positions=action_positions if pred_act else None,
                                                 domain_id=domain_id if pred_act else None,
                                                 output_hidden_states=True,
                                                 max_seq_len=text_tokens.size(1),
                                                 device=accelerator.device,
+                                                actions=actions if pred_act else None,
+                                                proprio=proprio if pred_act else None,
+                                                action_labels=action_labels if pred_act else None,
+                                                action_positions=action_positions if pred_act else None,
+                                                t_action=t_action.to(weight_type) if pred_act else None,
                                                 )
 
             loss_flow_m.update(loss_flow.item())
