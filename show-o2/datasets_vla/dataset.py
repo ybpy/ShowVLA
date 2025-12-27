@@ -96,7 +96,7 @@ class InfiniteDataReader(IterableDataset):
         handler = Handler(meta=meta, num_views=self.num_views,
             text_tokenizer=self.text_tokenizer, showo_token_ids=self.showo_token_ids,
             max_seq_len=self.max_seq_len, image_size=self.image_size, num_image_tokens=self.num_image_tokens, 
-            num_action_tokens=self.num_actions, pred_act=self.pred_act) 
+            num_actions=self.num_actions, pred_act=self.pred_act) 
         
         for traj_idx in traj_indices:
             # try:
