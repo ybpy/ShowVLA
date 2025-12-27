@@ -390,17 +390,17 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             self,
             text_tokens=None,
             image_latents=None,
-            action_tokens=None, 
+            # action_tokens=None, 
             t=None,
             attention_mask=None,
             text_masks=None,
             image_masks=None,
-            action_masks=None,
+            # action_masks=None,
             text_labels=None,
             image_labels=None,
-            action_labels=None,
+            # action_labels=None,
             modality_positions=None,
-            action_positions=None,
+            # action_positions=None,
             domain_id=None,
             first_frame_as_cond=False,
             only_denoise_last_image=False,
@@ -408,6 +408,12 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             output_hidden_states=True,
             max_seq_len=None,
             device='cuda:0',
+            actions=None,
+            proprio=None,
+            time_dim=32,
+            action_labels=None,
+            action_positions=None,
+            t_action=None,
             **kwargs,
     ):
         B, L = text_tokens.shape
@@ -510,7 +516,47 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                             new_image_labels[i, offset:offset + length] = image_labels[
                                                                           i * modality_positions.size(1) + j, :length]
 
+            if actions is not None:
+                assert proprio is not None, "proprioception input is required when actions are provided"
+                # t_action = (torch.rand(1, device=actions.device) + torch.arange(B, device=actions.device) / B) % (1 - 1e-5)
 
+                noisy_actions = torch.randn_like(actions) * t_action.view(-1, 1, 1) + actions * (1 - t_action).view(-1, 1, 1)
+
+                def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
+                    """
+                    Create sinusoidal timestep embeddings.
+
+                    Parameters
+                    ----------
+                    t : torch.Tensor
+                        Shape [B]. Each element is a timestep index, may be fractional.
+                    dim : int
+                        Dimensionality of the output embedding.
+                    max_period : int, default=100
+                        Controls the minimum frequency of the sinusoids.
+
+                    Returns
+                    -------
+                    torch.Tensor
+                        Shape [B, dim]. Sinusoidal embeddings.
+                    """
+                    half = dim // 2
+                    freqs = torch.exp(
+                        -math.log(max_period)
+                        * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
+                        / half
+                    )
+                    args = t[:, None] * freqs[None]
+                    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+                    if dim % 2 == 1:
+                        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+                    return embedding
+
+                time_emb = timestep_embedding(t_action)
+                time_tokens = time_emb.unsqueeze(1).expand(B, actions.shape[1], time_emb.shape[-1])
+                proprio_tokens = proprio.unsqueeze(1).expand(B, actions.shape[1], proprio.shape[-1])
+                action_tokens = torch.cat([noisy_actions, proprio_tokens, time_tokens], dim=-1)
+            
             if action_tokens is not None:
                 # encode action tokens
                 action_embeds = self.action_encoder(action_tokens, domain_id=domain_id)
@@ -958,6 +1004,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         act_pad_id = showo_token_ids['act_pad_id']
         num_action_tokens = config.xvla.num_actions
         action_dim = config.model.showo.action_dim
+        time_dim = config.model.showo.time_dim
 
         @app.post("/act")
         def act(payload: Dict[str, Any]):
@@ -975,6 +1022,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     else:
                         raise NotImplementedError
 
+                    t = torch.ones(b, n)
+                    t[:, -1] = 0.0
                     xt_list = []
                     for i in range(b):
                         for j in range(n):
@@ -988,38 +1037,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
                     xt = torch.cat(xt_list, dim=0)
                     xt = xt.reshape(b * n, c, h, w)
-                    return xt
-
-                def prepare_action_tokens(actions, proprio, t, time_dim=config.model.showo.get('time_embed_dim', 32)):
-                    """actions: [B, num_action_tokens, action_dim], proprio: [B, proprio_dim], t: [B]"""
-                    B = actions.shape[0]  # batch_size = 1 for inference
-                    
-                    # x0->action, x1->noise
-                    noisy_actions = torch.randn_like(actions) * t.view(-1, 1, 1) + actions * (1 - t).view(-1, 1, 1)
-                    
-                    def timestep_embedding(t: torch.Tensor, dim: int = time_dim, max_period: int = 100) -> torch.Tensor:
-                        """Create sinusoidal timestep embeddings."""
-                        half = dim // 2
-                        freqs = torch.exp(
-                            -math.log(max_period)
-                            * torch.arange(start=0, end=half, dtype=dtype, device=device)
-                            / half
-                        )
-                        args = t[:, None] * freqs[None]
-                        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-                        if dim % 2 == 1:
-                            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-                        return embedding
-                    
-                    # create time embeddings and expand to sequence length
-                    time_emb = timestep_embedding(t)  # [1, time_dim]
-                    time_tokens = time_emb.unsqueeze(1).expand(B, num_action_tokens, time_emb.shape[-1])
-                    # expand proprio to sequence length
-                    proprio_tokens = proprio.unsqueeze(1).expand(B, num_action_tokens, proprio.shape[-1])
-
-                    action_tokens = torch.cat([noisy_actions, proprio_tokens, time_tokens], dim=-1)
-                    
-                    return action_tokens
+                    return xt, t
                 
                 # Load image
                 image = json_numpy.loads(payload["image0"])
@@ -1044,7 +1062,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 pixel_values = pixel_values.to(device)
                 
                 # Get image latents
-                image_latents = prepare_image_latents(pixel_values)
+                image_latents, t = prepare_image_latents(pixel_values)
 
                 # Formulate text tokens
                 text_tokens = []
@@ -1112,17 +1130,21 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # Inference
                 # Denoising loop
                 for i in range(steps, 0, -1):
-                    t = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
-                    action_tokens = prepare_action_tokens(actions=actions, proprio=proprio, t=t)
+                    t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
+                    # action_tokens = prepare_action_tokens(actions=actions, proprio=proprio, t=t)
                     logits, v_pred_, actions = self(text_tokens=text_tokens,
                                                     image_latents=image_latents,
-                                                    action_tokens=action_tokens.to(dtype),
                                                     t=t.to(dtype),
                                                     attention_mask=block_mask,
                                                     modality_positions=modality_positions,
-                                                    action_positions=action_positions,
                                                     domain_id=domain_id,
                                                     max_seq_len=max_seq_len,
+                                                    device=device,
+                                                    actions=actions,
+                                                    proprio=proprio,
+                                                    time_dim=time_dim,
+                                                    action_positions=action_positions,
+                                                    t_action=t_action,
                                                    )
                 actions = actions.squeeze(0).tolist()
                 
