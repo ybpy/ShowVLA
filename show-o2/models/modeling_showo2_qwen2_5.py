@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import math
-from models import omni_attn_mask_naive
+from .omni_attention import omni_attn_mask_naive
 
 
 def timestep_embedding(t: torch.Tensor, dim: int = 32, max_period: int = 100) -> torch.Tensor:

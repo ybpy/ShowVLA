@@ -187,7 +187,8 @@ def main():
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 
     # Drop-upcycling if needed
-    if config.model.showo.drop_upcycling:
+    drop_upcycling = config.training.get('config.model.showo.drop_upcycling', False)
+    if drop_upcycling:
         logger.info("Dropping upcycling modules...")
         # Create MoE config from yaml settings
         config.model.showo.moe_config.vocab_size = config.model.showo.llm_vocab_size
