@@ -513,13 +513,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # Append soft prompts
                 if self.len_soft_prompts > 0:
                     soft_prompts = self.soft_prompt_hub(domain_id).view(B, self.len_soft_prompts, self.xvla_hidden_size)
-                    action_embeds = torch.cat([action_embeds, soft_prompts], dim=1)
+                    action_embeds = torch.cat([soft_prompts, action_embeds], dim=1)
 
                 action_embeds = self.project_xvla_encode(action_embeds)
 
                 for i, action_batch in enumerate(action_positions):
                     for j, (offset, length) in enumerate(action_batch): 
-                        input_embeds[i, offset:offset + length] = action_embeds[i * action_positions.size(1) + j, :length]
+                        input_embeds[i, offset:offset + length] = action_embeds[i * action_positions.size(1) + j]
 
 
             outputs = self.showo(
@@ -539,7 +539,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     for j, (offset, length) in enumerate(action_batch):
                         action_embeds_list.append(last_hidden_states[i, offset:offset + length])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
-                action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output[:, :num_actions])
+                action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output[:, self.len_soft_prompts:])
                 # action head to predict actions
                 pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
             
