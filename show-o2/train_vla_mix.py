@@ -313,8 +313,9 @@ def main():
 
     if accelerator.is_main_process:
         print(model)
-        # for n, p in model.named_parameters():
-        #     print(n + (" RequireGrad" if p.requires_grad else ""))
+        print()
+        for n, p in model.named_parameters():
+            print(n + (" RequireGrad" if p.requires_grad else ""))
 
     xval_norm_name_index = 0
     if use_lora:
@@ -383,7 +384,7 @@ def main():
     #################################
     logger.info("Creating dataloaders and lr_scheduler")
 
-    def create_dataloader(dataset, batch_size, collate_fn):
+    def create_grounding_dataloader(dataset, batch_size, collate_fn):
         if accelerator.num_processes > 1:
             sampler = DistributedSampler(dataset,
                                          num_replicas=accelerator.num_processes,
@@ -412,7 +413,7 @@ def main():
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
     )
-    train_dataloader_grounding = create_dataloader(dataset,
+    train_dataloader_grounding = create_grounding_dataloader(dataset,
                                                      config.training.batch_size_grounding,
                                                      dataset.collate_fn)
     
