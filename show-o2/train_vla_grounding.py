@@ -174,6 +174,7 @@ def main():
             low_cpu_mem_usage=False,
             device_map=None,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
+            xvla_depth=config.model.showo.get('xvla_depth', 2),
             action_dim=config.model.showo.get('action_dim', 20),
             proprio_dim=config.model.showo.get('proprio_dim', 20),
             time_dim=config.model.showo.get('time_dim', 32),
