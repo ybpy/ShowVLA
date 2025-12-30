@@ -41,11 +41,6 @@ try:
 except ImportError:
     LION_AVAILABLE = False
 
-try:
-    from transformers.optimization import Adafactor
-    ADAFACTOR_AVAILABLE = True
-except ImportError:
-    ADAFACTOR_AVAILABLE = False
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, set_seed
@@ -193,6 +188,7 @@ def main():
             low_cpu_mem_usage=False,
             device_map=None,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
+            xvla_depth=config.model.showo.get('xvla_depth', 2),
             action_dim=config.model.showo.get('action_dim', 20),
             proprio_dim=config.model.showo.get('proprio_dim', 20),
             time_dim=config.model.showo.get('time_dim', 32),
@@ -233,12 +229,16 @@ def main():
     xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
     if xvla_checkpoint is not None and config.model.showo.xvla_hidden_size is not None:
         logger.info("Loading XVLA action modules...")
+        xvla_layers_to_load = config.model.showo.get('xvla_layers_to_load', [22, 23])
+        assert len(xvla_layers_to_load) == model.xvla_depth
         success = load_xvla_modules(
             logger,
             model, 
             xvla_checkpoint,
             module_names=config.model.showo.get('xvla_modules_to_load', 
-                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub']),
+                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub', 'blocks']),
+            layer_prefix=config.model.showo.get('xvla_layer_prefix', 'blocks'),
+            layer_indices=xvla_layers_to_load,
             source_prefix=config.model.showo.get('source_prefix', 'transformer'),
             target_prefix=config.model.showo.get('target_prefix', None),
         )
@@ -428,26 +428,6 @@ def main():
             use_triton=True,
         )
         logger.info("Using Lion optimizer (memory efficient, faster convergence)")
-    elif optimizer_type == "adafactor":
-        if not ADAFACTOR_AVAILABLE:
-            raise ValueError("Adafactor requires transformers library with Adafactor support")
-        # Adafactor uses different parameters, convert grouped parameters
-        # Adafactor supports per-parameter-group learning rates
-        adafactor_params = []
-        for group in optimizer_grouped_parameters:
-            adafactor_params.append({
-                "params": group["params"],
-                "lr": group["lr"],
-                "weight_decay": group.get("weight_decay", optimizer_config.weight_decay),
-            })
-        optimizer = Adafactor(
-            adafactor_params,
-            scale_parameter=optimizer_config.get('scale_parameter', False),
-            relative_step_size=optimizer_config.get('relative_step_size', False),
-            warmup_init=optimizer_config.get('warmup_init', False),
-            weight_decay=optimizer_config.weight_decay,
-        )
-        logger.info("Using Adafactor optimizer (memory efficient, good for large models)")
     else:
         raise ValueError(f"Optimizer {optimizer_type} not supported. Available: adamw, adamw8bit, lion, adafactor")
 

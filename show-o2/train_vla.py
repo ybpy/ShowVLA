@@ -214,12 +214,16 @@ def main():
     xvla_checkpoint = config.model.showo.get('xvla_ckpt_path', None)
     if xvla_checkpoint is not None and config.model.showo.xvla_hidden_size is not None:
         logger.info("Loading XVLA action modules...")
+        xvla_layers_to_load = config.model.showo.get('xvla_layers_to_load', [22, 23])
+        assert len(xvla_layers_to_load) == model.xvla_depth
         success = load_xvla_modules(
             logger,
             model, 
             xvla_checkpoint,
             module_names=config.model.showo.get('xvla_modules_to_load', 
-                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub']),
+                ['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub', 'blocks']),
+            layer_prefix=config.model.showo.get('xvla_layer_prefix', 'blocks'),
+            layer_indices=xvla_layers_to_load,
             source_prefix=config.model.showo.get('source_prefix', 'transformer'),
             target_prefix=config.model.showo.get('target_prefix', None),
         )

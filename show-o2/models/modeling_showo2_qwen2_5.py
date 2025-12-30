@@ -39,79 +39,8 @@ from PIL import Image
 import math
 from .omni_attention import omni_attn_mask_naive
 
+from transformer import timestep_embedding, DomainAwareLinear, TransformerBlock
 
-def timestep_embedding(t: torch.Tensor, dim: int = 32, max_period: int = 100) -> torch.Tensor:
-    """
-    Create sinusoidal timestep embeddings.
-
-    Parameters
-    ----------
-    t : torch.Tensor
-        Shape [B]. Each element is a timestep index, may be fractional.
-    dim : int
-        Dimensionality of the output embedding.
-    max_period : int, default=100
-        Controls the minimum frequency of the sinusoids.
-
-    Returns
-    -------
-    torch.Tensor
-        Shape [B, dim]. Sinusoidal embeddings.
-    """
-    half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(start=0, end=half, dtype=t.dtype, device=t.device)
-        / half
-    )
-    args = t[:, None] * freqs[None]
-    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2 == 1:
-        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-    return embedding
-
-
-class DomainAwareLinear(nn.Module):
-    """
-    Linear layer with domain-conditioned parameters (per-sample).
-
-    Each domain has its own weight and bias vectors, stored in embeddings.
-    """
-
-    def __init__(self, input_size: int, output_size: int, num_domains: int = 20) -> None:
-        super().__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self.fc = nn.Embedding(num_domains, output_size * input_size)
-        self.bias = nn.Embedding(num_domains, output_size)
-        nn.init.xavier_uniform_(self.fc.weight)
-        nn.init.zeros_(self.bias.weight)
-
-    def forward(self, x: torch.Tensor, domain_id: torch.LongTensor) -> torch.Tensor:
-        """
-        Parameters
-        ----------
-        x : Tensor
-            [B, I] or [B, T, I]
-        domain_id : LongTensor
-            [B], domain indices.
-
-        Returns
-        -------
-        Tensor
-            [B, O] or [B, T, O]
-        """
-        B = domain_id.shape[0]
-        squeeze_T = False
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-            squeeze_T = True
-        W = self.fc(domain_id).view(B, self.input_size, self.output_size)
-        b = self.bias(domain_id).view(B, self.output_size)
-        y = torch.matmul(x, W) + b.view(B, 1, self.output_size)
-        if squeeze_T:
-            y = y.squeeze(1)
-        return y
 
 class Showo2Qwen2_5(ModelMixin, ConfigMixin):
     _supports_gradient_checkpointing = True
@@ -135,12 +64,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             add_qk_norm=False,
             clip_pretrained_model_path="google/siglip-so400m-patch14-384",
             xvla_hidden_size=1024,
+            xvla_depth=2,
             action_dim=20,
             proprio_dim=20,
             time_dim=32,
             len_soft_prompts=32,
             max_len_seq=512,
-            num_domains=20,
+            num_domains=30,
             **kwargs,
     ):
         super().__init__()
@@ -186,6 +116,11 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             self.xvla_hidden_size = xvla_hidden_size
             self.project_xvla_encode = nn.Linear(xvla_hidden_size, hidden_size)
             self.project_xvla_decode = nn.Linear(hidden_size, xvla_hidden_size)
+
+            self.xvla_depth = xvla_depth
+            self.blocks = nn.ModuleList(
+                [TransformerBlock(hidden_size, num_heads=16, mlp_ratio=4.0) for _ in range(xvla_depth)]
+            )
 
             self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, xvla_hidden_size), requires_grad=True)
             nn.init.normal_(self.pos_emb, std=0.02)
@@ -598,6 +533,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                         action_embeds_list.append(last_hidden_states[i, offset+self.len_soft_prompts:offset+self.len_soft_prompts+num_actions])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
                 action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output)
+                for block in self.blocks:
+                    action_embeds_from_output = block(action_embeds_from_output)
                 # action head to predict actions
                 pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
             

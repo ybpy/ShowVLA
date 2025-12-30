@@ -262,7 +262,9 @@ def load_xvla_modules(
     logger,
     model, 
     xvla_checkpoint_path, 
-    module_names=['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub'],
+    module_names=['action_encoder', 'action_decoder', 'norm', 'pos_emb', 'soft_prompt_hub', 'blocks'],
+    layer_prefix='blocks',
+    layer_indices=[22, 23],
     source_prefix='transformer',
     target_prefix=None,
 ):
@@ -337,6 +339,10 @@ def load_xvla_modules(
     else:
         xvla_state_dict = torch.load(checkpoint_file, map_location="cpu")
         logger.info(f"Loaded state_dict from pytorch file")
+
+    src_layer_id_2_tgt_layer_id = dict()
+    for i, src_layer_id in enumerate(layer_indices):
+        src_layer_id_2_tgt_layer_id[src_layer_id] = i
     
     filtered_state_dict = {}
     for key, value in xvla_state_dict.items():
@@ -344,10 +350,20 @@ def load_xvla_modules(
             continue
 
         new_key = key[len(source_prefix) + 1:]  # +1 for the dot
+        new_key_splits = new_key.split('.')
 
-        should_load = any(module_name == new_key.split('.')[0] for module_name in module_names)
+        should_load = any(module_name == new_key_splits[0] for module_name in module_names)
         if not should_load:
             continue
+
+        if new_key_splits[0] == layer_prefix:
+            layer_id = int(new_key_splits[1])
+            if layer_id in layer_indices:
+                tgt_layer_id = src_layer_id_2_tgt_layer_id[layer_id]
+                new_key_splits[1] = str(tgt_layer_id)
+                new_key = '.'.join(new_key_splits)
+            else:
+                continue
         
         # add target_prefix
         if target_prefix:
@@ -364,9 +380,7 @@ def load_xvla_modules(
         return False
     
     missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-
-    logger.info(f"unexpected_keys: {unexpected_keys}")
-    
+    assert len(unexpected_keys) == 0, f"unexpected_keys: {unexpected_keys}"
     logger.info(f"Successfully loaded {list(filtered_state_dict.keys())} from XVLA")
     
     return len(filtered_state_dict) > 0
