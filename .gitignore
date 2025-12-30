@@ -1,3 +1,4 @@
 show-o2/vis_*
+show-o2/__pycache__
 show-o2/*/__pycache__
 show-o2/wandb
