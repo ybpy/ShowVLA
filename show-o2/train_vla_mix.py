@@ -29,6 +29,23 @@ import random
 import torch
 from torch.optim import AdamW
 from einops import rearrange
+try:
+    import bitsandbytes as bnb
+    BITSANDBYTES_AVAILABLE = True
+except ImportError:
+    BITSANDBYTES_AVAILABLE = False
+
+try:
+    from lion_pytorch import Lion
+    LION_AVAILABLE = True
+except ImportError:
+    LION_AVAILABLE = False
+
+try:
+    from transformers.optimization import Adafactor
+    ADAFACTOR_AVAILABLE = True
+except ImportError:
+    ADAFACTOR_AVAILABLE = False
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, set_seed
@@ -376,8 +393,63 @@ def main():
             weight_decay=optimizer_config.weight_decay,
             eps=optimizer_config.epsilon,
         )
+    elif optimizer_type == "adamw8bit":
+        if not BITSANDBYTES_AVAILABLE:
+            raise ValueError("8-bit AdamW requires bitsandbytes library. Install with: pip install bitsandbytes")
+        optimizer = bnb.optim.AdamW8bit(
+            optimizer_grouped_parameters,
+            betas=(optimizer_config.beta1, optimizer_config.beta2),
+            weight_decay=optimizer_config.weight_decay,
+            eps=optimizer_config.epsilon,
+        )
+        logger.info("Using 8-bit AdamW optimizer (memory efficient, ~50% memory reduction)")
+    elif optimizer_type == "lion":
+        if not LION_AVAILABLE:
+            raise ValueError("Lion optimizer requires lion_pytorch library. Install with: pip install lion-pytorch")
+        # Lion supports per-parameter-group learning rates
+        # Lion typically requires learning rate 3-10x smaller than AdamW for stability
+        # and weight_decay 3-10x larger to maintain regularization strength
+        lion_lr_scale = optimizer_config.get('lion_lr_scale', 0.3)
+        lion_wd_scale = optimizer_config.get('lion_wd_scale', 3.0)
+        
+        logger.info(f"Lion: scaling learning rates by {lion_lr_scale}x (recommended: 0.1-0.33)")
+        
+        lion_params = []
+        for group in optimizer_grouped_parameters:
+            scaled_weight_decay = group.get("weight_decay", optimizer_config.weight_decay) * lion_wd_scale
+            lion_params.append({
+                "params": group["params"],
+                "lr": group["lr"] * lion_lr_scale,
+                "weight_decay": scaled_weight_decay,
+            })
+        optimizer = Lion(
+            lion_params,
+            betas=(0.9, 0.99),
+            use_triton=True,
+        )
+        logger.info("Using Lion optimizer (memory efficient, faster convergence)")
+    elif optimizer_type == "adafactor":
+        if not ADAFACTOR_AVAILABLE:
+            raise ValueError("Adafactor requires transformers library with Adafactor support")
+        # Adafactor uses different parameters, convert grouped parameters
+        # Adafactor supports per-parameter-group learning rates
+        adafactor_params = []
+        for group in optimizer_grouped_parameters:
+            adafactor_params.append({
+                "params": group["params"],
+                "lr": group["lr"],
+                "weight_decay": group.get("weight_decay", optimizer_config.weight_decay),
+            })
+        optimizer = Adafactor(
+            adafactor_params,
+            scale_parameter=optimizer_config.get('scale_parameter', False),
+            relative_step_size=optimizer_config.get('relative_step_size', False),
+            warmup_init=optimizer_config.get('warmup_init', False),
+            weight_decay=optimizer_config.weight_decay,
+        )
+        logger.info("Using Adafactor optimizer (memory efficient, good for large models)")
     else:
-        raise ValueError(f"Optimizer {optimizer_type} not supported")
+        raise ValueError(f"Optimizer {optimizer_type} not supported. Available: adamw, adamw8bit, lion, adafactor")
 
     ##################################
     #         DATALOADER             #

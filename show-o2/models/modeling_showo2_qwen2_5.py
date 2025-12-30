@@ -543,6 +543,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                             new_image_labels[i, offset:offset + length] = image_labels[
                                                                           i * modality_positions.size(1) + j, :length]
 
+            action_tokens = None
             if actions is not None:
                 assert proprio is not None, "proprioception input is required when actions are provided"
                 noisy_actions = torch.randn_like(actions) * t_action.view(-1, 1, 1) + actions * (1 - t_action).view(-1, 1, 1)
