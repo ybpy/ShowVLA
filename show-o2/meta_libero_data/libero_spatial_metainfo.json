@@ -2,8 +2,7 @@
     "dataset_name": "libero_spatial",
     "language_instruction_key": "language_instruction",
     "observation_key": [
-        "rgb_main",
-        "rgb_wrist"
+        "rgb_comb"
     ],
     "num_ep": 434,
     "datalist": [
