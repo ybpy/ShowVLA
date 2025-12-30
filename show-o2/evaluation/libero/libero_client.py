@@ -83,7 +83,7 @@ def combine_main_wrist_views(main_img, wrist_img,
     assert comb_size[1] == main_tgt_size[1]
 
     assert main_img.shape[:2] == wrist_img.shape[:2] == src_size
-    wrist_img = wrist_img[:clip_wrist_height]
+    wrist_img = wrist_img[-clip_wrist_height:]
 
     # Resize
     main_img = np.array(Image.fromarray(main_img).resize((main_tgt_size[1], main_tgt_size[0]), Image.BILINEAR))
