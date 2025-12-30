@@ -28,6 +28,7 @@ import requests
 import torch  # noqa: F401  # (kept in case of future GPU array ops)
 import torchvision.transforms as transforms  # noqa: F401
 from tqdm import tqdm
+from PIL import Image
 
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv  # noqa: F401
@@ -72,6 +73,30 @@ def _ensure_dir(path: Path) -> None:
 def _flip_agentview(img: np.ndarray) -> np.ndarray:
     """Match original code behavior: vertical+horizontal flips."""
     return np.flip(np.flip(img, 0), 1)
+
+
+def combine_main_wrist_views(main_img, wrist_img,
+        src_size=(256, 256), clip_wrist_height=224,
+        main_tgt_size=(224, 320), wrist_tgt_size=(112, 160), comb_size=(336, 320), wrist_at_left=False):
+    """ Combine the main view image and the wrist view image into an image. """
+    assert comb_size[0] == main_tgt_size[0] + wrist_tgt_size[0]
+    assert comb_size[1] == main_tgt_size[1]
+
+    assert main_img.shape[:2] == wrist_img.shape[:2] == src_size
+    wrist_img = wrist_img[:clip_wrist_height]
+
+    # Resize
+    main_img = np.array(Image.fromarray(main_img).resize((main_tgt_size[1], main_tgt_size[0]), Image.BILINEAR))
+    wrist_img = np.array(Image.fromarray(wrist_img).resize((wrist_tgt_size[1], wrist_tgt_size[0]), Image.BILINEAR))
+
+    comb_img = np.zeros((comb_size[0], comb_size[1], 3), dtype=np.uint8)
+    comb_img[:main_tgt_size[0]] = main_img
+    if wrist_at_left:
+        comb_img[main_tgt_size[0]: , :wrist_tgt_size[1]] = wrist_img
+    else:
+        comb_img[main_tgt_size[0]: , wrist_tgt_size[1]:] = wrist_img
+
+    return comb_img
 
 
 # -----------------------------------------------------------------------------
@@ -163,6 +188,8 @@ class ClientModel:
         main_view = _flip_agentview(obs["agentview_image"])  # (256,256,3)
         wrist_view = obs["robot0_eye_in_hand_image"]  # (256,256,3)
 
+        comb_rgb = combine_main_wrist_views(main_view, wrist_view)
+
         closed_loop_proprio = np.concatenate([obs['robo_pos'], obs['robo_ori'], np.array([0.0])], axis=-1)
         closed_loop_proprio = np.concatenate([closed_loop_proprio, np.zeros_like(closed_loop_proprio)], axis=-1)
         if self.proprio is None:
@@ -172,8 +199,9 @@ class ClientModel:
         return {
             "proprio": json_numpy.dumps(self.proprio),
             "language_instruction": goal,
-            "image0": json_numpy.dumps(main_view),
-            "image1": json_numpy.dumps(wrist_view),
+            # "image0": json_numpy.dumps(main_view),
+            # "image1": json_numpy.dumps(wrist_view),
+            "image0": json_numpy.dumps(comb_rgb),
             "domain_id": 3,
             "steps": 10,
         }

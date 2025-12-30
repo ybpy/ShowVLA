@@ -60,10 +60,14 @@ def encode_frames_to_jpeg_bytes(frames):
     return encoded
 
 def combine_main_wrist_views(main_img, wrist_img,
+        src_size=(256, 256), clip_wrist_height=224,
         main_tgt_size=(224, 320), wrist_tgt_size=(112, 160), comb_size=(336, 320), wrist_at_left=False):
     """ Combine the main view image and the wrist view image into an image. """
     assert comb_size[0] == main_tgt_size[0] + wrist_tgt_size[0]
     assert comb_size[1] == main_tgt_size[1]
+
+    assert main_img.shape[:2] == wrist_img.shape[:2] == src_size
+    wrist_img = wrist_img[:clip_wrist_height]
 
     # Resize
     main_img = np.array(Image.fromarray(main_img).resize((main_tgt_size[1], main_tgt_size[0]), Image.BILINEAR))
