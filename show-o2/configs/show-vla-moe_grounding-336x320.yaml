@@ -6,12 +6,11 @@ wandb:
 
 uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
-use_compile: True
 
 experiment:
     project: "show-vla"
-    name: "showvla-moe_grounding_fix"
-    output_dir: "showvla-moe_grounding_fix"
+    name: "showvla-grounding"
+    output_dir: "showvla-grounding"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -19,7 +18,7 @@ experiment:
     generate_every: 5000
     log_every: 100
     log_grad_norm_every: 100
-    resume_from_checkpoint: "latest"
+    resume_from_checkpoint: null
 
 model:
     vae_model:
@@ -51,6 +50,7 @@ model:
         params_not_load: null
         pred_act: False 
         xvla_hidden_size: null
+        xvla_depth: 2
         action_dim: 20
         proprio_dim: 20
         time_dim: 32
@@ -67,8 +67,13 @@ model:
             - norm
             - pos_emb
             - soft_prompt_hub
+            - blocks
+        xvla_layer_prefix: "blocks"
+        xvla_layers_to_load:
+            - 22
+            - 23
 
-        drop_upcycling: True
+        drop_upcycling: False
         moe_config:
             attention_dropout: 0.0
             bos_token_id: 151643
@@ -150,7 +155,9 @@ dataset:
         max_num_images: 4
 
 optimizer:
-    name: adamw
+    # name: adamw
+    name: adamw8bit
+    # name: lion
     params: # default adamw params
         learning_rate_ve: 0.00001
         learning_rate_proj: 0.00002
@@ -192,8 +199,10 @@ xvla:
     action_mode: ee6d
 
 training:
-    use_lora: True
+    use_lora: False
     lr_multipler: 10.0
+    use_compile: True
+    compile_mode: "default"
 
     coco_metas_path: ./meta_coco_data
     batch_size_grounding: 2
