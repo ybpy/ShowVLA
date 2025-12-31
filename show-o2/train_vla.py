@@ -441,8 +441,12 @@ def main():
             if hasattr(unwrapped_model, "base_model"):
                 unwrapped_model = unwrapped_model.base_model.model
 
-            unwrapped_model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
+            missing_keys, unexpected_keys = unwrapped_model.load_state_dict(state_dict, strict=False)
             del state_dict
+
+            assert len(unexpected_keys) == 0, f"unexpected_keys: {unexpected_keys}"
+            logger.info(f"missing_keys: {missing_keys}")
+            
 
     # Calculate steps for the scheduler (based on optimization steps, not micro-steps)
     num_training_steps = config.training.max_train_steps

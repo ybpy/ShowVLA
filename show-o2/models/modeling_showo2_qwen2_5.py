@@ -39,7 +39,7 @@ from PIL import Image
 import math
 from .omni_attention import omni_attn_mask_naive
 
-from transformer import timestep_embedding, DomainAwareLinear, TransformerBlock
+from .transformer import timestep_embedding, DomainAwareLinear, TransformerBlock
 
 
 class Showo2Qwen2_5(ModelMixin, ConfigMixin):

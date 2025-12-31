@@ -1,7 +1,9 @@
 conda create -n show python=3.10
 conda activate show
 
-pip install torch==2.6.0 torchvision==0.21.0 --index-url https://mirror.nju.edu.cn/pytorch/whl/cu126
+# # 国内建议用pytorch镜像
+# pip install torch==2.6.0 torchvision==0.21.0 --index-url https://mirror.nju.edu.cn/whl/cu126
+pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu126
 
 pip install transformers==4.51.3;
 pip install diffusers==0.31.0;
@@ -19,8 +21,14 @@ pip install torchdiffeq==0.2.5;
 pip install segment_anything==1.0;
 pip install wandb==0.19.7;
 
-wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
-pip install flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl --no-build-isolation;
+
+pip install ninja packaging wheel
+# 设置临时目录到 conda 环境目录，避免跨设备链接错误
+export TMPDIR=${CONDA_PREFIX:-$HOME}/tmp;
+mkdir -p $TMPDIR;
+export MAX_JOBS=4;
+pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir --no-binary flash-attn;
+
 
 pip install deepspeed==0.17.1;
 pip install accelerate==1.12.0;
@@ -33,6 +41,8 @@ pip install pyarrow==20.0.0;
 pip install av==15.0.0;
 pip install moviepy==1.0.3;
 pip install jsonlines==4.0.0;
+
+pip install pycocotools
 
 pip install fastapi
 pip install peft==0.17.1

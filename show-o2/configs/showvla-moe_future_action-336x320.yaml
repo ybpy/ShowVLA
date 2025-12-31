@@ -18,7 +18,7 @@ experiment:
     generate_every: 5000
     log_every: 100
     log_grad_norm_every: 100
-    resume_from_checkpoint: null
+    resume_from_checkpoint: "latest"
 
 model:
     vae_model:
@@ -203,6 +203,7 @@ training:
     lr_multipler: 10.0
     use_compile: True
     compile_mode: "default"
+    
     train_metas_path: ./meta_libero_data
     batch_size_vla: 2
     action_coeff: 1.0
