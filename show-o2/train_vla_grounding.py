@@ -416,7 +416,7 @@ def main():
     logger.info("=" * 80)
     for i, group_info in enumerate(group_names_list):
         logger.info(f"\nGroup {i+1}: {group_info['name']}")
-        logger.info(f"  Learning Rate: {group_info['lr']}")
+        logger.info(f"  Learning Rate: {group_info['lr']:.2e}")
         logger.info(f"  Weight Decay: {group_info['weight_decay']}")
         logger.info(f"  Number of Parameters: {len(group_info['param_names'])}")
         logger.info(f"  Parameter Names:")
@@ -766,16 +766,16 @@ def main():
                         f"Ep:{epoch} "
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
-                        f"LR_ve:{lr[0]:0.6f} "
-                        f"LR_proj:{lr[1]:0.6f} "
-                        f"LR_showo:{lr[2]:0.6f}"
+                        f"LR_ve:{lr[0]:.2e} "
+                        f"LR_proj:{lr[1]:.2e} "
+                        f"LR_showo:{lr[2]:.2e}"
                     )
                     if pred_act:
                         logger.info(
                             f"Loss_action: {Loss_action:0.4f} "
-                            f"LR_act: {lr[-3]:0.6f} "
-                            f"LR_soft_prompt: {lr[-2]:0.6f} "
-                            f"LR_project_xvla: {lr[-1]:0.6f} "
+                            f"LR_act: {lr[-3]:.2e} "
+                            f"LR_soft_prompt: {lr[-2]:.2e} "
+                            f"LR_project_xvla: {lr[-1]:.2e} "
                         )
                 else:
                     logs = {
@@ -789,9 +789,9 @@ def main():
                         f"Ep:{epoch} "
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
-                        f"LR_ve:{lr[0]:0.6f} "
-                        f"LR_proj:{lr[1]:0.6f} "
-                        f"LR_showo:{lr[2]:0.6f}"
+                        f"LR_ve:{lr[0]:.2e} "
+                        f"LR_proj:{lr[1]:.2e} "
+                        f"LR_showo:{lr[2]:.2e}"
                     )
                 loss_flow_m.reset()
                 loss_action_m.reset()

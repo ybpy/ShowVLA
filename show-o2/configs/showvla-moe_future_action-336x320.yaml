@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-future_act"
-    output_dir: "showvla-future_act"
+    name: "showvla-future_act_seed"
+    output_dir: "showvla-future_act_seed"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -162,9 +162,9 @@ optimizer:
         learning_rate_proj: 0.0001
         learning_rate_showo: 0.0001
         learning_rate_showo_expert: 0.00025
-        learning_rate_act: 0.000075
-        learning_rate_soft_prompt: 0.0000125
-        learning_rate_project_xvla: 0.000625
+        learning_rate_act: 0.0001
+        learning_rate_soft_prompt: 0.000015
+        learning_rate_project_xvla: 0.0006
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -172,7 +172,7 @@ optimizer:
         epsilon: 1e-8
 
 lr_scheduler:
-    scheduler: "cosine"
+    scheduler: "constant_with_warmup"
     params:
         warmup_steps: null # will be calculated in the training code
         warmup_ratio: 0.03
@@ -213,7 +213,7 @@ training:
     batch_size_mixed_modal: 2
     mixed_precision: "bf16"
     enable_tf32: True
-    seed: 10000
+    seed: 0
     max_train_steps: 16000
     cond_dropout_prob: 0.1
     label_smoothing: 0.0

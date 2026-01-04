@@ -230,13 +230,11 @@ def load_state_dict(model_path):
 
     return state_dict
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
+def set_seed(seed: int):
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = True
 
 def load_video(video_path, max_frames_num, fps, force_sample=False):
     if max_frames_num == 0:
@@ -385,13 +383,7 @@ def load_xvla_modules(
     
     return len(filtered_state_dict) > 0
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+
 
 def initialize_weights(logger, size, method, std=0.02, mean=0):
     if method == "torch_normal":

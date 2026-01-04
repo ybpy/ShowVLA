@@ -43,7 +43,7 @@ except ImportError:
 
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import DistributedType, set_seed
+from accelerate.utils import DistributedType
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from models import Showo2Qwen2_5, omni_attn_mask_naive
@@ -59,7 +59,8 @@ if torch.cuda.is_available():
 from datasets_vla import COCODataset, MixedDataLoader
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
-    path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits
+    path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
+
 
 from transport import Sampler, create_transport
 
@@ -154,7 +155,7 @@ def main():
 
     # If passed along, set the training seed now.
     if config.training.seed is not None:
-        set_seed(config.training.seed)
+        set_seed(config.training.seed + accelerator.process_index)
 
     #########################
     # MODELS and OPTIMIZER  #
@@ -418,7 +419,7 @@ def main():
     logger.info("=" * 80)
     for i, group_info in enumerate(group_names_list):
         logger.info(f"\nGroup {i+1}: {group_info['name']}")
-        logger.info(f"  Learning Rate: {group_info['lr']}")
+        logger.info(f"  Learning Rate: {group_info['lr']:.2e}")
         logger.info(f"  Weight Decay: {group_info['weight_decay']}")
         logger.info(f"  Number of Parameters: {len(group_info['param_names'])}")
         logger.info(f"  Parameter Names:")
@@ -771,16 +772,16 @@ def main():
                     logger.info(
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
-                        f"LR_ve:{lr[0]:0.6f} "
-                        f"LR_proj:{lr[1]:0.6f} "
-                        f"LR_showo:{lr[2]:0.6f}"
+                        f"LR_ve:{lr[0]:.2e} "
+                        f"LR_proj:{lr[1]:.2e} "
+                        f"LR_showo:{lr[2]:.2e}"
                     )
                     if pred_act:
                         logger.info(
                             f"Loss_action: {Loss_action:0.4f} "
-                            f"LR_act: {lr[-3]:0.6f} "
-                            f"LR_soft_prompt: {lr[-2]:0.6f} "
-                            f"LR_project_xvla: {lr[-1]:0.6f} "
+                            f"LR_act: {lr[-3]:.2e} "
+                            f"LR_soft_prompt: {lr[-2]:.2e} "
+                            f"LR_project_xvla: {lr[-1]:.2e} "
                         )
                 else:
                     logs = {
@@ -793,9 +794,9 @@ def main():
                     logger.info(
                         f"Step:{global_step + 1} "
                         f"Loss_flow:{Loss_flow:0.4f} "
-                        f"LR_ve:{lr[0]:0.6f} "
-                        f"LR_proj:{lr[1]:0.6f} "
-                        f"LR_showo:{lr[2]:0.6f}"
+                        f"LR_ve:{lr[0]:.2e} "
+                        f"LR_proj:{lr[1]:.2e} "
+                        f"LR_showo:{lr[2]:.2e}"
                     )
                 loss_flow_m.reset()
                 loss_action_m.reset()
