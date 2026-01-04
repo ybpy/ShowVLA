@@ -29,6 +29,18 @@ import random
 import torch
 from torch.optim import AdamW
 from einops import rearrange
+try:
+    import bitsandbytes as bnb
+    BITSANDBYTES_AVAILABLE = True
+except ImportError:
+    BITSANDBYTES_AVAILABLE = False
+
+try:
+    from lion_pytorch import Lion
+    LION_AVAILABLE = True
+except ImportError:
+    LION_AVAILABLE = False
+
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, set_seed
@@ -122,7 +134,6 @@ def main():
             entity=config.wandb.get("entity", None),
             config_exclude_keys=[],
         )
-        print(config)
         wandb_config = {k: v for k, v in flatten_omega_conf(config, resolve=True)}
         wandb_config.pop("experiment.resume_from_checkpoint")
 
@@ -131,8 +142,8 @@ def main():
             config=wandb_config,
             init_kwargs={"wandb": wandb_init_kwargs},
         )
+        print(config)
 
-    if accelerator.is_main_process:
         os.makedirs(config.experiment.output_dir, exist_ok=True)
         config_path = Path(config.experiment.output_dir) / "config.yaml"
         logging.info(f"Saving config to {config_path}")
@@ -162,7 +173,7 @@ def main():
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
-                                                         add_return_act_token_ids=pred_act)
+                                                         add_return_act_token_ids=True)
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     if config.model.showo.load_from_showo:
@@ -181,9 +192,9 @@ def main():
             max_len_seq=config.model.showo.get('max_len_seq', 512),
             num_domains=config.model.showo.get('num_domains', 20),
         ).to(accelerator.device)
-        if config.model.showo.llm_vocab_size != model.showo.vocab_size:
-            logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
-            model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
+        # if config.model.showo.llm_vocab_size != model.showo.vocab_size:
+        #     logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
+        #     model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 
@@ -234,7 +245,7 @@ def main():
             logger.info("XVLA action modules loaded successfully!")
 
     use_lora = config.training.get('use_lora', False)
-    lr_multipler = config.training.get('lr_multipler', 1.0)
+    lr_multipler = config.training.get('lr_multipler', 1.0) if use_lora else 1.0
     if use_lora:
         exclude_modules = ["time_embed"]
         suffix_of_modules_to_save = [
@@ -316,8 +327,6 @@ def main():
 
     if accelerator.is_main_process:
         print(model)
-        # for n, p in model.named_parameters():
-        #     print(n + (" RequireGrad" if p.requires_grad else ""))
 
     xval_norm_name_index = 0
     if use_lora:
@@ -325,51 +334,94 @@ def main():
     if use_compile:
         xval_norm_name_index += 1
 
-    optimizer_grouped_parameters = [
+    # 定义参数组配置
+    group_configs = [
         {
-            "params": [p for n, p in model.named_parameters() if
-                       (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
-                        and p.requires_grad)],
+            "name": "VE (und_trans/image_embedder/position_embedding)",
+            "filter": lambda n, p: (('und_trans' in n or 'image_embedder' in n or 'position_embedding' in n)
+                                    and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_ve * lr_multipler,
         },
         {
-            "params": [p for n, p in model.named_parameters() if ('fusion_proj' in n and p.requires_grad)],
+            "name": "Fusion Projection",
+            "filter": lambda n, p: ('fusion_proj' in n and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_proj * lr_multipler
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((
+            "name": "ShowO2 (without experts)",
+            "filter": lambda n, p: ((
                 (('showo' in n) and ('experts' not in n)) or 
-                'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad)],
+                'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_showo * lr_multipler
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((
-                'experts' in n) and p.requires_grad)],
+            "name": "ShowO2 Experts",
+            "filter": lambda n, p: (('experts' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_showo_expert * lr_multipler
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((
-                'pos_emb' in n or 'norm' == n.split('.')[xval_norm_name_index] or 'action_encoder' in n or 'action_decoder' in n) and p.requires_grad)],
+            "name": "Action (pos_emb/norm/action_encoder/action_decoder)",
+            "filter": lambda n, p: ((
+                'pos_emb' in n or 'norm' == n.split('.')[xval_norm_name_index] or 'action_encoder' in n or 'action_decoder' in n or 'blocks' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_act
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((
-                'soft_prompt_hub' in n) and p.requires_grad)],
+            "name": "Soft Prompt Hub",
+            "filter": lambda n, p: (('soft_prompt_hub' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_soft_prompt
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((
-                'project_xvla' in n) and p.requires_grad)],
+            "name": "Project XVLA",
+            "filter": lambda n, p: (('project_xvla' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_project_xvla
         },
     ]
+    
+    # 构建参数组并收集参数名称
+    optimizer_grouped_parameters = []
+    group_names_list = []
+    
+    for group_config in group_configs:
+        params = []
+        param_names = []
+        for n, p in model.named_parameters():
+            if group_config["filter"](n, p):
+                params.append(p)
+                param_names.append(n)
+        if len(param_names) == 0:
+            continue
+        optimizer_grouped_parameters.append({
+            "params": params,
+            "weight_decay": group_config["weight_decay"],
+            "lr": group_config["lr"],
+        })
+        group_names_list.append({
+            "name": group_config["name"],
+            "param_names": param_names,
+            "lr": group_config["lr"],
+            "weight_decay": group_config["weight_decay"],
+        })
+    
+    # 打印每个group的参数名称
+    logger.info("=" * 80)
+    logger.info("Optimizer Parameter Groups:")
+    logger.info("=" * 80)
+    for i, group_info in enumerate(group_names_list):
+        logger.info(f"\nGroup {i+1}: {group_info['name']}")
+        logger.info(f"  Learning Rate: {group_info['lr']}")
+        logger.info(f"  Weight Decay: {group_info['weight_decay']}")
+        logger.info(f"  Number of Parameters: {len(group_info['param_names'])}")
+        logger.info(f"  Parameter Names:")
+        for param_name in group_info['param_names']:
+            logger.info(f"    - {param_name}")
+    logger.info("=" * 80)
 
     if optimizer_type == "adamw":
         optimizer = AdamW(
@@ -378,8 +430,43 @@ def main():
             weight_decay=optimizer_config.weight_decay,
             eps=optimizer_config.epsilon,
         )
+    elif optimizer_type == "adamw8bit":
+        if not BITSANDBYTES_AVAILABLE:
+            raise ValueError("8-bit AdamW requires bitsandbytes library. Install with: pip install bitsandbytes")
+        optimizer = bnb.optim.AdamW8bit(
+            optimizer_grouped_parameters,
+            betas=(optimizer_config.beta1, optimizer_config.beta2),
+            weight_decay=optimizer_config.weight_decay,
+            eps=optimizer_config.epsilon,
+        )
+        logger.info("Using 8-bit AdamW optimizer (memory efficient, ~50% memory reduction)")
+    elif optimizer_type == "lion":
+        if not LION_AVAILABLE:
+            raise ValueError("Lion optimizer requires lion_pytorch library. Install with: pip install lion-pytorch")
+        # Lion supports per-parameter-group learning rates
+        # Lion typically requires learning rate 3-10x smaller than AdamW for stability
+        # and weight_decay 3-10x larger to maintain regularization strength
+        lion_lr_scale = optimizer_config.get('lion_lr_scale', 0.3)
+        lion_wd_scale = optimizer_config.get('lion_wd_scale', 3.0)
+        
+        logger.info(f"Lion: scaling learning rates by {lion_lr_scale}x (recommended: 0.1-0.33)")
+        
+        lion_params = []
+        for group in optimizer_grouped_parameters:
+            scaled_weight_decay = group.get("weight_decay", optimizer_config.weight_decay) * lion_wd_scale
+            lion_params.append({
+                "params": group["params"],
+                "lr": group["lr"] * lion_lr_scale,
+                "weight_decay": scaled_weight_decay,
+            })
+        optimizer = Lion(
+            lion_params,
+            betas=(0.9, 0.99),
+            use_triton=True,
+        )
+        logger.info("Using Lion optimizer (memory efficient, faster convergence)")
     else:
-        raise ValueError(f"Optimizer {optimizer_type} not supported")
+        raise ValueError(f"Optimizer {optimizer_type} not supported. Available: adamw, adamw8bit, lion")
 
     ##################################
     #         DATALOADER             #
@@ -446,6 +533,10 @@ def main():
 
             assert len(unexpected_keys) == 0, f"unexpected_keys: {unexpected_keys}"
             logger.info(f"missing_keys: {missing_keys}")
+
+    if config.model.showo.llm_vocab_size != model.showo.vocab_size:
+        logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
+        model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
             
 
     # Calculate steps for the scheduler (based on optimization steps, not micro-steps)
@@ -633,12 +724,11 @@ def main():
                         "lr_showo": lr[2],
                     }
                     if pred_act:
-                        act_related_lr_start_index = 4 if config.model.showo.drop_upcycling else 3
                         logs.update({
                             "Loss_action": Loss_action,
-                            "lr_act": lr[act_related_lr_start_index],
-                            "lr_soft_prompt": lr[act_related_lr_start_index+1],
-                            "lr_project_xvla": lr[act_related_lr_start_index+2],
+                            "lr_act": lr[-3],
+                            "lr_soft_prompt": lr[-2],
+                            "lr_project_xvla": lr[-1],
                         })
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
@@ -651,9 +741,9 @@ def main():
                     if pred_act:
                         logger.info(
                             f"Loss_action: {Loss_action:0.4f} "
-                            f"LR_act: {lr[act_related_lr_start_index]:0.6f} "
-                            f"LR_soft_prompt: {lr[act_related_lr_start_index+1]:0.6f} "
-                            f"LR_project_xvla: {lr[act_related_lr_start_index+2]:0.6f} "
+                            f"LR_act: {lr[-3]:0.6f} "
+                            f"LR_soft_prompt: {lr[-2]:0.6f} "
+                            f"LR_project_xvla: {lr[-1]:0.6f} "
                         )
                 else:
                     logs = {

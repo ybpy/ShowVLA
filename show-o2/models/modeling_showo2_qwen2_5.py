@@ -119,7 +119,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
             self.xvla_depth = xvla_depth
             self.blocks = nn.ModuleList(
-                [TransformerBlock(hidden_size, num_heads=16, mlp_ratio=4.0) for _ in range(xvla_depth)]
+                [TransformerBlock(xvla_hidden_size, num_heads=16, mlp_ratio=4.0) for _ in range(xvla_depth)]
             )
 
             self.pos_emb = nn.Parameter(torch.zeros(1, max_len_seq, xvla_hidden_size), requires_grad=True)
@@ -530,13 +530,13 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 action_embeds_list = []
                 for i, action_batch in enumerate(action_positions):
                     for j, (offset, length) in enumerate(action_batch):
-                        action_embeds_list.append(last_hidden_states[i, offset+self.len_soft_prompts:offset+self.len_soft_prompts+num_actions])
+                        action_embeds_list.append(last_hidden_states[i, offset:offset+length])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
                 action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output)
                 for block in self.blocks:
                     action_embeds_from_output = block(action_embeds_from_output)
                 # action head to predict actions
-                pred_actions = self.action_decoder(self.norm(action_embeds_from_output), domain_id=domain_id)
+                pred_actions = self.action_decoder(self.norm(action_embeds_from_output[:, self.len_soft_prompts:]), domain_id=domain_id)
             
 
             # diffusion head to predict vector fields

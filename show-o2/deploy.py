@@ -158,8 +158,16 @@ def main():
             model = get_peft_model(model, lora_config)
 
         state_dict = load_state_dict(config.model_path)
-        model.load_state_dict(state_dict)
-        model = model.merge_and_unload()
+        # Unwrap model manually to match the state_dict structure
+        unwrapped_model = model
+        while hasattr(unwrapped_model, "_orig_mod"):
+            unwrapped_model = unwrapped_model._orig_mod
+        if hasattr(unwrapped_model, "base_model"):
+            unwrapped_model = unwrapped_model.base_model.model
+        unwrapped_model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
+        del state_dict
+        if use_lora:
+            model = model.merge_and_unload()
         model.to(weight_type)
         model.eval()
 

@@ -16,8 +16,8 @@ experiment:
     max_train_examples_mmu: null
     save_every: 2000
     generate_every: 5000
-    log_every: 100
-    log_grad_norm_every: 100
+    log_every: 20
+    log_grad_norm_every: 20
     resume_from_checkpoint: "latest"
 
 model:
@@ -47,10 +47,10 @@ model:
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'showo', 'position_embedding' ]
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
         frozen_params: null
-        params_not_load: null
+        params_not_load: [ 'lm_head' ]
         pred_act: True 
         xvla_hidden_size: 1024
-        xvla_depth: 2
+        xvla_depth: 1
         action_dim: 20
         proprio_dim: 20
         time_dim: 32
@@ -70,7 +70,6 @@ model:
             - blocks
         xvla_layer_prefix: "blocks"
         xvla_layers_to_load:
-            - 22
             - 23
 
         drop_upcycling: False
@@ -129,7 +128,7 @@ dataset:
         persistent_workers: True
 
     preprocessing:
-        max_vla_seq_len: 928
+        max_vla_seq_len: 936
         vla_image_size: [336, 320]
         num_vla_image_tokens: 420
 
@@ -159,13 +158,13 @@ optimizer:
     name: adamw8bit
     # name: lion
     params: # default adamw params
-        learning_rate_ve: 0.00001
-        learning_rate_proj: 0.00002
-        learning_rate_showo: 0.00002
-        learning_rate_showo_expert: 0.00005
-        learning_rate_act: 0.00002
-        learning_rate_soft_prompt: 0.000005
-        learning_rate_project_xvla: 0.0005
+        learning_rate_ve: 0.00005
+        learning_rate_proj: 0.0001
+        learning_rate_showo: 0.0001
+        learning_rate_showo_expert: 0.00025
+        learning_rate_act: 0.000075
+        learning_rate_soft_prompt: 0.0000125
+        learning_rate_project_xvla: 0.000625
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999

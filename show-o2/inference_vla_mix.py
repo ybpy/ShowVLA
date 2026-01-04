@@ -197,7 +197,8 @@ if __name__ == '__main__':
         unwrapped_model.load_state_dict(state_dict, strict=True)
         del state_dict
     """ Merge Lora """
-    model = model.merge_and_unload()
+    if use_lora:
+        model = model.merge_and_unload()
 
 
     model.to(weight_type)
