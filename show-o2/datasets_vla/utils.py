@@ -14,7 +14,6 @@
 # limitations under the License.
 # ------------------------------------------------------------------------------
 
-from __future__ import annotations
 import io, numpy as np, pyarrow.parquet as pq, av, cv2, os
 from mmengine import fileio
 from PIL import Image
@@ -22,6 +21,8 @@ from scipy.spatial.transform import Rotation as R
 import h5py
 from typing import Sequence, Dict
 import torch
+
+from pycocotools import mask as maskUtils
 
 
 BBOX_COLORS = {
@@ -82,11 +83,11 @@ def try_get_img_with_bbox(img, instances, color):
     
     return Image.fromarray(img)
 
-def get_img_with_segment_mask(img, instances, coco, color, mask_color_weight=0.7):
+def get_img_with_segment_mask(img, h, w, instances, color, mask_color_weight=0.7):
     img = np.array(img)
     comb_mask = None
     for ann in instances:
-        mask = coco.annToMask(ann)
+        mask = annToMask(ann, h, w)
         if comb_mask is None:
             comb_mask = mask
         else:
@@ -98,6 +99,34 @@ def get_img_with_segment_mask(img, instances, coco, color, mask_color_weight=0.7
     img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
     
     return Image.fromarray(img)
+
+def annToRLE(ann, h, w):
+    """
+    Convert annotation which can be polygons, uncompressed RLE to RLE.
+    :return: binary mask (numpy 2D array)
+    """
+    segm = ann['segmentation']
+    if type(segm) == list:
+        # polygon -- a single object might consist of multiple parts
+        # we merge all parts into one mask rle code
+        rles = maskUtils.frPyObjects(segm, h, w)
+        rle = maskUtils.merge(rles)
+    elif type(segm['counts']) == list:
+        # uncompressed RLE
+        rle = maskUtils.frPyObjects(segm, h, w)
+    else:
+        # rle
+        rle = ann['segmentation']
+    return rle
+
+def annToMask(ann, h, w):
+    """
+    Convert annotation which can be polygons, uncompressed RLE, or RLE to binary mask.
+    :return: binary mask (numpy 2D array)
+    """
+    rle = annToRLE(ann, h, w)
+    m = maskUtils.decode(rle)
+    return m
 
 
 def read_bytes(path: str) -> bytes:

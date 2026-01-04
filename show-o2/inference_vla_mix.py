@@ -34,7 +34,7 @@ from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 import numpy as np
 from einops import rearrange
 from torch.utils.data import DataLoader
-from datasets_vla import COCODataset, MixedDataLoader
+from datasets_vla import GroundingDataset, MixedDataLoader
 from datasets_vla import create_dataloader
 
 if torch.cuda.is_available():
@@ -232,7 +232,7 @@ if __name__ == '__main__':
                                                   drop_last=True)
         return dataloader
 
-    dataset = COCODataset(
+    dataset = GroundingDataset(
         metas_path=config.training.coco_metas_path,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,

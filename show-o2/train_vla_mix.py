@@ -56,7 +56,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets_vla import COCODataset, MixedDataLoader
+from datasets_vla import GroundingDataset, MixedDataLoader
 from datasets_vla import create_dataloader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
@@ -498,7 +498,7 @@ def main():
                                         persistent_workers=True)
         return dataloader
 
-    dataset = COCODataset(
+    dataset = GroundingDataset(
         metas_path=config.training.coco_metas_path,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,

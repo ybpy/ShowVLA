@@ -19,7 +19,6 @@ import os
 import numpy as np
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from mmengine import fileio
-from pycocotools.coco import COCO
 from PIL import Image
 
 import io
@@ -30,8 +29,8 @@ from torch.utils.data import Dataset
 from datasets_vla.utils import BBOX_COLORS, MASK_COLORS, try_get_img_with_bbox, get_img_with_segment_mask
 
 
-class COCODataset(Dataset):
-    """Dataset for Coco Object Detection based on Any-to-Any Generation."""
+class GroundingDataset(Dataset):
+    """Dataset for Object Detection/Segmentation based on Any-to-Any Generation."""
 
     def __init__(
             self,
@@ -50,7 +49,6 @@ class COCODataset(Dataset):
         else: meta_files, root = [metas_path], ""
 
         self.all_datalist = []
-        self.dataset_name_2_coco_helper = dict()
         for file in meta_files:
             with io.BytesIO(fileio.get(fileio.join_path(root, file))) as f: meta = json.load(f)
             dataset_name = meta['dataset_name']
@@ -58,10 +56,6 @@ class COCODataset(Dataset):
             datalist = meta['datalist']
             print(f"== [{file}] Dataset {dataset_name} with {len(datalist)} images")
 
-            coco = COCO(ann_json_path)
-            # Remove unused parts to save memory
-            coco.dataset, coco.anns, coco.cats, coco.imgToAnns, coco.catToImgs = None, None, None, None, None
-            self.dataset_name_2_coco_helper[dataset_name] = coco
             for json_path in datalist:
                 self.all_datalist.append([dataset_name, json_path])
 
@@ -146,12 +140,14 @@ class COCODataset(Dataset):
 
     def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
         dataset_name, json_path = self.all_datalist[idx]
-        coco_helper = self.dataset_name_2_coco_helper[dataset_name]
         data_dict = json.load(open(json_path))
 
         img_path = data_dict["img_path"]
         img = Image.open(img_path).convert('RGB')
         img = self.image_aug(img)
+
+        img_h, img_w = data_dict["height"], data_dict["width"]
+        assert img.size == (img_h, img_w, 3)
 
         category_2_instances = data_dict["anns"]
         category = np.random.choice(list(category_2_instances.keys()))
@@ -170,7 +166,7 @@ class COCODataset(Dataset):
         if not use_bbox:
             mask_color_name = np.random.choice(list(self.mask_colors.keys()))
             mask_color_rgb = self.mask_colors[mask_color_name]
-            tgt_img = get_img_with_segment_mask(img, instances, coco_helper, mask_color_rgb)
+            tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, mask_color_rgb)
             text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
 
         # vis = tgt_img
@@ -221,7 +217,7 @@ if __name__ == '__main__':
         llm_name="qwen2_5"
     )
 
-    dataset = COCODataset(
+    dataset = GroundingDataset(
         metas_path="./meta_coco_data",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,

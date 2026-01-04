@@ -459,7 +459,6 @@ def replace_model_parameters(
     init_method,
     ffn_init_ratio,
 ):
-    set_seed(seed)
 
     target_model = Qwen2MoeForCausalLM(target_config)
     ori_intermediate_size = target_config.intermediate_size

@@ -39,6 +39,8 @@ def convert_anns_for_image(image, img_dir, img_id_2_anns, out_json_dir,
     
     data_dict = {
         "img_path": img_path,
+        "height": height,
+        "width": width,
         "anns": cat_2_instances_filtered,
     }
     out_json_path = os.path.join(out_json_dir, f"{img_id}.json")

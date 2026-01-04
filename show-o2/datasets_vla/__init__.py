@@ -19,7 +19,7 @@ import torch
 from torch.utils.data import DataLoader
 from .dataset import InfiniteDataReader
 
-from .coco_dataset import COCODataset
+from .grounding_dataset import GroundingDataset
 from .mixed_dataloader import MixedDataLoader
 
 
