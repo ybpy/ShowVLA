@@ -59,7 +59,10 @@ pip install mediapy==1.2.4
 pip install bitsandbytes
 pip install lion_pytorch
 
-cd ../LIBERO
+cd ../../
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+find ./libero -type f -exec sed -i "s/torch\.load(init_states_path)/torch.load(init_states_path, weights_only=False)/g" {} +
 pip install hydra-core==1.2.0
 pip install easydict==1.13
 pip install robomimic==0.3.0
