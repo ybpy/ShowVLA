@@ -59,7 +59,7 @@ pip install mediapy==1.2.4
 pip install bitsandbytes
 pip install lion_pytorch
 
-
+cd ../LIBERO
 pip install hydra-core==1.2.0
 pip install easydict==1.13
 pip install robomimic==0.3.0
@@ -69,3 +69,4 @@ pip install bddl==1.0.1
 pip install future==0.18.2
 pip install cloudpickle==3.1.1
 pip install gym==0.26.2
+pip install -e .

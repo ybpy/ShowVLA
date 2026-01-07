@@ -167,6 +167,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
         self.reset_parameters()
 
+        # Deferred FastAPI app
+        self.app: FastAPI | None = None
+
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = True
 
@@ -931,9 +934,11 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         boi_id = showo_token_ids['boi_id']
         eoi_id = showo_token_ids['eoi_id']
         img_pad_id = showo_token_ids['img_pad_id']
-        max_seq_len = config.preproc_config.max_vla_seq_len
-        image_size = config.preproc_config.vla_image_size
-        num_image_tokens = config.preproc_config.num_vla_image_tokens
+        max_seq_len = config.dataset.preprocessing.max_vla_seq_len
+        image_size = config.dataset.preprocessing.vla_image_size
+        num_image_tokens = config.dataset.preprocessing.num_vla_image_tokens
+        if config.model.showo.add_time_embeds:
+            num_image_tokens += 1
 
         boa_id = showo_token_ids['boa_id']
         eoa_id = showo_token_ids['eoa_id']
@@ -942,41 +947,43 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         num_action_tokens = config.xvla.num_actions + config.model.showo.len_soft_prompts
         action_dim = config.model.showo.action_dim
 
+        @torch.no_grad()
+        def prepare_image_latents(pixel_values, num_obs_img=1):
+            b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
+            if config.model.vae_model.type == 'wan21':
+                # (b, n, 3, 256, 256)
+                pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
+                pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
+                image_latents = vae_model.sample(pixel_values)
+                image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
+                _, c, h, w = image_latents.shape
+                image_latents = image_latents.reshape(b, n, c, h, w)
+            else:
+                raise NotImplementedError
+
+            t = torch.ones(b, n, dtype=dtype, device=device)
+            t[:, -1] = 0.0
+            t = t.reshape(-1)
+
+            xt_list = []
+            for i in range(b):
+                for j in range(n):
+                    is_obs_img = j < num_obs_img
+                    # x0->noise x1->image
+                    x1 = image_latents[i][j]
+                    
+                    xt = x1 if is_obs_img else torch.randn_like(x1)
+                    
+                    xt_list.append(xt)
+
+            xt = torch.cat(xt_list, dim=0)
+            xt = xt.reshape(b * n, c, h, w)
+            return xt, t
+
         @app.post("/act")
+        @torch.no_grad()
         def act(payload: Dict[str, Any]):
             try:
-                def prepare_image_latents(pixel_values, num_obs_img=1):
-                    b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
-                    if config.model.vae_model.type == 'wan21':
-                        # (b, n, 3, 256, 256)
-                        pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
-                        pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
-                        image_latents = vae_model.sample(pixel_values)
-                        image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
-                        _, c, h, w = image_latents.shape
-                        image_latents = image_latents.reshape(b, n, c, h, w)
-                    else:
-                        raise NotImplementedError
-
-                    t = torch.ones(b, n, dtype=dtype, device=device)
-                    t[:, -1] = 0.0
-                    t = t.reshape(-1)
-
-                    xt_list = []
-                    for i in range(b):
-                        for j in range(n):
-                            is_obs_img = j < num_obs_img
-                            # x0->noise x1->image
-                            x1 = image_latents[i][j]
-                            
-                            xt = x1 if is_obs_img else torch.randn_like(x1)
-                            
-                            xt_list.append(xt)
-
-                    xt = torch.cat(xt_list, dim=0)
-                    xt = xt.reshape(b * n, c, h, w)
-                    return xt, t
-                
                 # Load image
                 image = json_numpy.loads(payload["image0"])
                 if isinstance(image, np.ndarray):
@@ -1024,7 +1031,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 else:
                     raise ValueError(f"Unsupported Language Instruction: {text}")
                 
-                lang_tokens = text_tokenizer.encode(text, add_special_tokens=False, truncation=False).input_ids
+                lang_tokens = text_tokenizer(text, add_special_tokens=False, truncation=False).input_ids
                 text_tokens.extend(lang_tokens)
                 cur_len = cur_len + len(lang_tokens)
 
@@ -1070,7 +1077,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 dt = 1.0 / steps
                 for i in range(steps, 0, -1):
                     t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
-                    logits, v_pred_, actions = self.forward(text_tokens=text_tokens,
+                    _, v_pred_, actions = self.forward(text_tokens=text_tokens,
                                                     image_latents=image_latents,
                                                     t=t_img,
                                                     attention_mask=block_mask,
@@ -1085,7 +1092,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                                    )
                     # Update image_latents and t_img
                     image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
-                    t_img[:, 1:] = (t_img[:, 1:] + dt).clamp(0, 1)
+                    t_img[1::2] = (t_img[1::2] + dt).clamp(0, 1)
                     
                 actions = actions.squeeze(0).tolist()
                 
