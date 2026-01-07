@@ -1,5 +1,6 @@
 import os
 import json
+import argparse
 from collections import defaultdict
 
 
@@ -30,7 +31,7 @@ def convert_anns_for_image(image, img_dir, img_id_2_anns, out_json_dir,
             continue
         print(f"Area Ratio: {area_ratio}")
         if area_ratio < area_ratio_ths:
-            print(f"Area Ratio is too small (<{area_ratio_ths})). Discard!!!")
+            print(f"Too small (<{area_ratio_ths}). Discard!!!")
             continue
         cat_2_instances_filtered[cat] = instances
 
@@ -97,11 +98,27 @@ def convert_coco(dataset_name, ann_json_path, img_dir, out_json_dir, out_meta_pa
     with open(out_meta_path, 'w') as meta_json_f:
         json.dump(meta_dict, meta_json_f, indent=4)
 
-split_name = "train"
+def main():
+    parser = argparse.ArgumentParser(description='Convert COCO dataset annotations')
+    parser.add_argument('--data_root', type=str, default='/home/hyx/datasets/coco',
+                        help='Root directory of COCO dataset')
+    parser.add_argument('--split_name', type=str, default='train',
+                        choices=['train', 'val'],
+                        help='Split name')
+    
+    
+    args = parser.parse_args()
+    
+    split_name = args.split_name
+    data_root = args.data_root
+    
+    dataset_name = f"coco_{split_name}2017"
+    ann_json_path = f"{data_root}/annotations/instances_{split_name}2017.json"
+    img_dir = f"{data_root}/{split_name}2017"
+    out_json_dir = f"{data_root}/{split_name}2017_json_"
+    out_meta_path = f"./coco_{split_name}2017_meta.json"
+    convert_coco(dataset_name, ann_json_path, img_dir, out_json_dir, out_meta_path)
 
-dataset_name = f"coco_{split_name}2017"
-ann_json_path = f"/home/hyx/datasets/coco/annotations/instances_{split_name}2017.json"
-img_dir = f"/home/hyx/datasets/coco/{split_name}2017"
-out_json_dir = f"/home/hyx/datasets/coco/{split_name}2017_json"
-out_meta_path = f"./coco_{split_name}2017_meta.json"
-convert_coco(dataset_name, ann_json_path, img_dir, out_json_dir, out_meta_path)
+
+if __name__ == "__main__":
+    main()

@@ -26,7 +26,7 @@ import torch
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from torch.utils.data import Dataset
-from datasets_vla.utils import BBOX_COLORS, MASK_COLORS, try_get_img_with_bbox, get_img_with_segment_mask
+from datasets_vla.utils import BBOX_COLORS, MASK_COLORS, try_get_img_with_bbox, get_img_with_segment_mask, get_img_with_segment_mask_ade20k
 
 
 class GroundingDataset(Dataset):
@@ -41,6 +41,7 @@ class GroundingDataset(Dataset):
             image_size,
             num_image_tokens,
             prob_bbox: float = 0.5,
+            mask_color_weight: float = 0.7,
     ) -> None:
 
         if fileio.isdir(metas_path):
@@ -52,7 +53,6 @@ class GroundingDataset(Dataset):
         for file in meta_files:
             with io.BytesIO(fileio.get(fileio.join_path(root, file))) as f: meta = json.load(f)
             dataset_name = meta['dataset_name']
-            ann_json_path = meta['ann_json_path']
             datalist = meta['datalist']
             print(f"== [{file}] Dataset {dataset_name} with {len(datalist)} images")
 
@@ -89,6 +89,7 @@ class GroundingDataset(Dataset):
         self.prob_bbox = prob_bbox
         self.bbox_colors = BBOX_COLORS
         self.mask_colors = MASK_COLORS
+        self.mask_color_weight = mask_color_weight
 
     def format_img_text_tgt_img_seq(self, text: str):
         text_tokens = []
@@ -147,32 +148,45 @@ class GroundingDataset(Dataset):
         img = self.image_aug(img)
 
         img_h, img_w = data_dict["height"], data_dict["width"]
-        assert img.size == (img_h, img_w, 3)
+        assert img.size == (img_w, img_h), f"img.size {img.size} != ({img_w}, {img_h})"
 
-        category_2_instances = data_dict["anns"]
-        category = np.random.choice(list(category_2_instances.keys()))
-        instances = category_2_instances[category]
+        if 'coco' in dataset_name.lower():
+            category_2_instances = data_dict["anns"]
+            category = np.random.choice(list(category_2_instances.keys()))
+            instances = category_2_instances[category]
+            use_bbox = np.random.rand() < self.prob_bbox
+            if use_bbox:
+                bbox_color_name = np.random.choice(list(self.bbox_colors.keys()))
+                bbox_color_rgb = self.bbox_colors[bbox_color_name]
+                tgt_img = try_get_img_with_bbox(img, instances, bbox_color_rgb)
+                if tgt_img is None:
+                    use_bbox = False
+                else:
+                    text = f"Mark all {category} in the image with {bbox_color_name} bounding box. Image with marked {category}:"
+            if not use_bbox:
+                mask_color_name = np.random.choice(list(self.mask_colors.keys()))
+                color = self.mask_colors[mask_color_name]
+                tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, color, self.mask_color_weight)
+                text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
+        elif 'ade20k' in dataset_name.lower():
+            segm_path = data_dict["segm_path"]
+            segm = Image.open(segm_path)
+            assert segm.size == (img_w, img_h), f"segm.size {segm.size} != ({img_w}, {img_h})"
 
-        use_bbox = np.random.rand() < self.prob_bbox
-        if use_bbox:
-            bbox_color_name = np.random.choice(list(self.bbox_colors.keys()))
-            bbox_color_rgb = self.bbox_colors[bbox_color_name]
-            tgt_img = try_get_img_with_bbox(img, instances, bbox_color_rgb)
-            if tgt_img is None:
-                use_bbox = False
-            else:
-                text = f"Mark all {category} in the image with {bbox_color_name} bounding box. Image with marked {category}:"
-        
-        if not use_bbox:
+            list_categories = data_dict["list_categories"]
+            (cat_id, category) = list_categories[np.random.choice(len(list_categories))]
+
             mask_color_name = np.random.choice(list(self.mask_colors.keys()))
-            mask_color_rgb = self.mask_colors[mask_color_name]
-            tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, mask_color_rgb)
+            color = self.mask_colors[mask_color_name]
+            tgt_img = get_img_with_segment_mask_ade20k(img, segm, cat_id, color, self.mask_color_weight)
             text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
+        else:
+            raise NotImplementedError(f"Unsupported grounding dataset: {dataset_name}")
 
-        # vis = tgt_img
-        # text_clean = text.replace('(', '').replace(')', '').replace('\"', '')
-        # print(text_clean)
-        # vis.save(f"{idx}_{text_clean}.jpg")
+        vis = tgt_img
+        text_clean = text.replace('(', '').replace(')', '').replace('\"', '')
+        print(text_clean)
+        vis.save(f"{idx}_{text_clean}.jpg")
 
         text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_img_text_tgt_img_seq(text)
 
@@ -218,12 +232,12 @@ if __name__ == '__main__':
     )
 
     dataset = GroundingDataset(
-        metas_path="./meta_coco_data",
+        metas_path="./meta_grounding_data/coco",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=560,
-        image_size=(384, 320),
-        num_image_tokens=256+1,
+        max_seq_len=872,
+        image_size=(336, 320),
+        num_image_tokens=420+1,
         prob_bbox=0.5,
     )
     train_dataloader_img_edit = DataLoader(dataset, batch_size=8, collate_fn=dataset.collate_fn,

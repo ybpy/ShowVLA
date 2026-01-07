@@ -27,27 +27,26 @@ from pycocotools import mask as maskUtils
 
 BBOX_COLORS = {
     "red": (255, 0, 0),
-    "green": (0, 255, 0),
+    "green": (0, 128, 0),
     "blue": (0, 0, 255),
 }
 
 MASK_COLORS = {
     "red": (255, 0, 0),
-    "green": (0, 255, 0),
+    "green": (0, 128, 0),
     "blue": (0, 0, 255),
-    "yellow": (255, 255, 0),
+    "yellow": (238, 230, 0),
     "purple": (128, 0, 128),
-    "orange": (255, 165, 0),
-    "cyan": (0, 240, 240),
+    "orange": (255, 140, 0),
+    "cyan": (0, 230, 230),
     "magenta": (255, 0, 255),
-    "lime": (0, 255, 128),
-    "pink": (255, 105, 180),
+    "lime": (0, 255, 0),
+    "pink": (255, 20, 147),
     "indigo": (75, 0, 130),
-    "gold": (255, 215, 0),
+    "gold": (245,191,35),
     "olive": (128, 128, 0),
     "violet": (148, 0, 211),
-    "coral": (255, 127, 80),
-    "khaki": (240, 230, 140),
+    "khaki": (189, 183, 107),
 }
 
 def try_get_img_with_bbox(img, instances, color):
@@ -127,6 +126,17 @@ def annToMask(ann, h, w):
     rle = annToRLE(ann, h, w)
     m = maskUtils.decode(rle)
     return m
+
+
+def get_img_with_segment_mask_ade20k(img, segm, cat_id, mask_color_rgb, mask_color_weight=0.7):
+    img = np.array(img)
+    segm = np.array(segm)
+
+    colored_mask = np.zeros_like(img)
+    colored_mask[segm == cat_id] = mask_color_rgb
+    img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
+    
+    return Image.fromarray(img)
 
 
 def read_bytes(path: str) -> bytes:
