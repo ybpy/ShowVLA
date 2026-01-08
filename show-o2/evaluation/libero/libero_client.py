@@ -351,12 +351,19 @@ class LIBEROEval:
         self._make_dir(save_path)
 
         rews: List[float] = []
+        task_to_succ = dict()
         for task_suite in self.task_suite_list:
             for task_id in tqdm(range(len(task_suite.tasks)), desc="Evaluating tasks"):
+                task_total_rew = 0
                 for ep in range(self.num_episodes):
                     policy.reset()
                     rew = self._rollout(task_suite, policy, task_id, ep)
                     rews.append(rew)
+                    task_total_rew += rew
+                task = task_suite.get_task(task_id).language.replace(' ', '_')
+                task_to_succ[f"{self.task_suite_name}/{task}"] = task_total_rew / self.num_episodes
+                
+        self._log_results(task_to_succ)
 
         eval_rewards = float(sum(rews) / max(len(rews), 1))
         metrics = {f'sim_summary/{self.task_suite_name}/all': eval_rewards}
