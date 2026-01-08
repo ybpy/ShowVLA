@@ -159,7 +159,7 @@ def main(args):
             # Reset environment, set initial state, and wait a few steps for environment to settle
             env.reset()
             env.set_init_state(orig_states[0])
-            for _ in range(10):
+            for _ in range(20):
                 obs, reward, done, info = env.step(get_libero_dummy_action("llava"))
 
             # Set up new data lists

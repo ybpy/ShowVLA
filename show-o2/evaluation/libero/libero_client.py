@@ -294,7 +294,7 @@ class LIBEROEval:
         obs = env.set_init_state(init_states[init_state_id])
 
         # settle
-        for _ in range(10):
+        for _ in range(20):
             action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0])
             obs, reward, done, info = env.step(action)
 
