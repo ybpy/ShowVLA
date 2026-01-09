@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 show-o2/vis_*
 show-o2/wandb
+*.mp4
+*.json
+*.bin
+*.log
