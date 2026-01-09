@@ -253,74 +253,25 @@ if __name__ == '__main__':
 
     sampler = Sampler(transport)
 
+    dtype = weight_type
+
     @torch.no_grad()
-    def prepare_latents_and_labels(
-            pixel_values,
-            image_masks,
-            modality_positions,
-            num_obs_img=1,
-    ):
+    def prepare_image_latents(pixel_values, num_obs_img=1):
         b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
         if config.model.vae_model.type == 'wan21':
             # (b, n, 3, 256, 256)
             pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
             pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
             image_latents = vae_model.sample(pixel_values)
-            recons_images = vae_model.batch_decode(image_latents)
             image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
-            recons_images = recons_images.squeeze(2)    # (b*n, 3, 256, 256)
             _, c, h, w = image_latents.shape
             image_latents = image_latents.reshape(b, n, c, h, w)
-            recons_images = recons_images.reshape(b, n, pixel_c, pixel_h, pixel_w)
         else:
             raise NotImplementedError
 
-        t_list, xt_list, ut_list = [], [], []
-        masks = image_masks # b l
-        for i in range(b):
-            for j in range(n):
-                is_obs_img = j < num_obs_img
-                # x0->noise x1->image
-                t, x0, x1 = transport.sample(image_latents[i][j][None],
-                                            config.training.und_max_t0 if is_obs_img else None)
-                # timesteps, noised image, velocity
-                t, xt, ut = transport.path_sampler.plan(t, x0, x1)
-                t_list.append(t)
-                xt_list.append(xt)
-                ut_list.append(ut)
-                if is_obs_img:
-                    assert j == 0, f"Only the first image is observation"
-                    assert t == 1.0, f"The observation image should not be noisy"
-                    # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
-                    masks[i, img_sid: img_sid + length] = 0
-
-        t = torch.stack(t_list, dim=0).squeeze(-1)
-        xt = torch.cat(xt_list, dim=0)
-        ut = torch.cat(ut_list, dim=0)
-
-        ut = ut.reshape(b * n, c, h, w)
-        xt = xt.reshape(b * n, c, h, w)
-        t = t.reshape(b * n)
-
-        return xt, t, ut, recons_images, masks
-
-    @torch.no_grad()
-    def prepare_latents(pixel_values, num_obs_img=1):
-        b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
-        if config.model.vae_model.type == 'wan21':
-            # (b, n, 3, 256, 256)
-            pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
-            pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
-            image_latents = vae_model.sample(pixel_values)
-            recons_images = vae_model.batch_decode(image_latents)
-            image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
-            recons_images = recons_images.squeeze(2)    # (b*n, 3, 256, 256)
-            _, c, h, w = image_latents.shape
-            image_latents = image_latents.reshape(b, n, c, h, w)
-            recons_images = recons_images.reshape(b, n, pixel_c, pixel_h, pixel_w)
-        else:
-            raise NotImplementedError
+        t = torch.ones(b, n, dtype=dtype, device=device)
+        t[:, -1] = 0.0
+        t = t.reshape(-1)
 
         xt_list = []
         for i in range(b):
@@ -335,8 +286,8 @@ if __name__ == '__main__':
 
         xt = torch.cat(xt_list, dim=0)
         xt = xt.reshape(b * n, c, h, w)
-        return xt
-
+        return xt, t
+    
     batch_idx = 0
     sample_idx = 0
     for batch in mixed_loader:
@@ -358,42 +309,30 @@ if __name__ == '__main__':
             assert text_tokens.size(0) == 1
             print(f"\nsample_idx: {sample_idx}")
             
-            # prepare image latents and labels
-            # image_latents, t, image_labels, recons_images, image_masks = prepare_latents_and_labels(pixel_values,
-            #                                                                                         image_masks,
-            #                                                                                         modality_positions)
-            image_latents = prepare_latents(pixel_values)
+            image_latents, t_img = prepare_image_latents(pixel_values)
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),
                                                 modality_positions,
                                                 device).to(weight_type)
 
-            # z = torch.randn((len(prompts),
-            #                  image_latent_dim, latent_height * patch_size,
-            #                  latent_width * patch_size)).to(torch.bfloat16).to(device)
+            steps = config.num_inference_steps
+            dt = 1.0 / steps
+            with torch.no_grad():
+                for _ in range(steps):
+                    _, v_pred_ = model.forward(text_tokens=text_tokens,
+                                            image_latents=image_latents,
+                                            t=t_img,
+                                            attention_mask=block_mask,
+                                            modality_positions=modality_positions,
+                                            max_seq_len=max_seq_len,
+                                            device=device,
+                                            )
+                    # Update image_latents and t_img
+                    image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
+                    t_img[1::2] = (t_img[1::2] + dt).clamp(0, 1)
 
-            z = image_latents
-
-            model_kwargs = dict(
-                text_tokens=text_tokens,
-                attention_mask=block_mask,
-                modality_positions=modality_positions,
-                output_hidden_states=True,
-                max_seq_len=max_seq_len,
-                guidance_scale=guidance_scale,
-                only_denoise_last_image=True
-            )
-
-            sample_fn = sampler.sample_ode(
-                sampling_method=config.transport.sampling_method,
-                num_steps=config.transport.num_inference_steps,
-                atol=config.transport.atol,
-                rtol=config.transport.rtol,
-                reverse=config.transport.reverse,
-                time_shifting_factor=config.transport.time_shifting_factor
-            )
-            samples = sample_fn(z, model.t2i_generate, **model_kwargs)[-1]
+            samples = image_latents
 
             if config.model.vae_model.type == 'wan21':
                 samples = samples.unsqueeze(2)

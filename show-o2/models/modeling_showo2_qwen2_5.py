@@ -16,6 +16,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 from einops import rearrange
 from transformers import AutoConfig
 from torch.nn.attention.flex_attention import BlockMask
@@ -169,6 +170,11 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
         # Deferred FastAPI app
         self.app: FastAPI | None = None
+        self.image_transform = [
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
+        ]
+        self.image_transform = transforms.Compose(self.image_transform)
 
     def _set_gradient_checkpointing(self, module, value=False):
         self.gradient_checkpointing = True
@@ -379,6 +385,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             action_labels=None,
             action_positions=None,
             t_action=None,
+            actions_noise=None,
             **kwargs,
     ):
         B, L = text_tokens.shape
@@ -484,7 +491,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             action_tokens = None
             if actions is not None:
                 assert proprio is not None, "proprioception input is required when actions are provided"
-                noisy_actions = torch.randn_like(actions) * t_action.view(-1, 1, 1) + actions * (1 - t_action).view(-1, 1, 1)
+                if actions_noise is None:
+                    actions_noise = torch.randn_like(actions)
+                noisy_actions = actions_noise * t_action.view(-1, 1, 1) + actions * (1 - t_action).view(-1, 1, 1)
                 # zero-out gripper channels in actions/proprio
                 noisy_actions[..., self.GRIPPER_IDX] = 0.0
                 proprio[..., self.GRIPPER_IDX] = 0.0
@@ -998,9 +1007,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     return JSONResponse({"error": "No valid images found."}, status_code=400)
                 
                 # Convert PIL.Image to tensor format for prepare_image_latents
-                image_curr = np.array(image)  # (256, 256, 3)
-                image_curr = image_curr.astype(np.float32) / 255.0
-                image_curr = torch.from_numpy(image_curr).permute(2, 0, 1)  # (3, 256, 256)
+                image_curr = self.image_transform(image)
                 image_future = torch.zeros_like(image_curr)  # (3, 256, 256)
                 pixel_values = torch.stack([image_curr, image_future], dim=0)  # (2, 3, 256, 256)
                 pixel_values = pixel_values.unsqueeze(0)  # (1, 2, 3, 256, 256)
@@ -1072,9 +1079,27 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 domain_id = domain_id.unsqueeze(0)
                 actions = torch.zeros((text_tokens.size(0), num_actions, action_dim), device=device, dtype=dtype)
 
+                # actions_noise = torch.randn_like(actions)
+
+                pred_future_init_t = 0.0
+                # pred_future_init_steps = 10
+                # dt = pred_future_init_t / pred_future_init_steps
+                # for _ in range(pred_future_init_steps):
+                #     _, v_pred_ = self.forward(text_tokens=text_tokens,
+                #                             image_latents=image_latents,
+                #                             t=t_img,
+                #                             attention_mask=block_mask,
+                #                             modality_positions=modality_positions,
+                #                             max_seq_len=max_seq_len,
+                #                             device=device,
+                #                             )
+                #     # Update image_latents and t_img
+                #     image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
+                #     t_img[1::2] = (t_img[1::2] + dt).clamp(0, 1)
+
                 # Inference
                 # Denoising loop
-                dt = 1.0 / steps
+                dt = (1.0 - pred_future_init_t) / steps
                 for i in range(steps, 0, -1):
                     t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
                     _, v_pred_, actions = self.forward(text_tokens=text_tokens,
@@ -1089,6 +1114,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                                     proprio=proprio,
                                                     action_positions=action_positions,
                                                     t_action=t_action,
+                                                    # actions_noise=actions_noise,
                                                    )
                     # Update image_latents and t_img
                     image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
