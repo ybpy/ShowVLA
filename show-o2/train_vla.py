@@ -82,7 +82,6 @@ def main():
     config.experiment.logging_dir = str(Path(config.experiment.output_dir) / "logs")
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        mixed_precision=config.training.mixed_precision,
         log_with="wandb",
         project_dir=config.experiment.logging_dir,
         split_batches=True,
@@ -192,9 +191,9 @@ def main():
             max_len_seq=config.model.showo.get('max_len_seq', 512),
             num_domains=config.model.showo.get('num_domains', 20),
         ).to(accelerator.device)
-        # if config.model.showo.llm_vocab_size != model.showo.vocab_size:
-        #     logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
-        #     model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
+        if config.model.showo.llm_vocab_size != model.showo.vocab_size:
+            logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
+            model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 
@@ -292,21 +291,6 @@ def main():
         model.print_trainable_parameters()
 
 
-    use_compile = config.training.get('use_compile', True)
-    compile_mode = config.training.get('compile_mode', "default")
-    if use_compile:
-        try:
-            if hasattr(torch, "compile"):
-                compile_kwargs = {"mode": compile_mode}
-                model = torch.compile(model, **compile_kwargs)
-                logger.info(f"Enabled torch.compile with mode={compile_mode}")
-            else:
-                logger.warning("torch.compile is unavailable in the installed torch version.")
-        except Exception as exc:
-            logger.warning(f"Failed to enable torch.compile: {exc}. Continuing without compilation.")
-            use_compile = False
-
-
     # Choose layers to freeze
     _freeze_params(model, config.model.showo.frozen_params)
 
@@ -325,14 +309,10 @@ def main():
     optimizer_config = config.optimizer.params
     optimizer_type = config.optimizer.name
 
-    if accelerator.is_main_process:
-        print(model)
 
     xval_norm_name_index = 0
     if use_lora:
         xval_norm_name_index += 2
-    if use_compile:
-        xval_norm_name_index += 1
 
     # 定义参数组配置
     group_configs = [
@@ -534,11 +514,6 @@ def main():
             assert len(unexpected_keys) == 0, f"unexpected_keys: {unexpected_keys}"
             logger.info(f"missing_keys: {missing_keys}")
 
-    if config.model.showo.llm_vocab_size != model.showo.vocab_size:
-        logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
-        model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
-            
-
     # Calculate steps for the scheduler (based on optimization steps, not micro-steps)
     num_training_steps = config.training.max_train_steps
     num_warmup_steps = int(num_training_steps * config.lr_scheduler.params.warmup_ratio)
@@ -555,6 +530,23 @@ def main():
     #################################
     logger.info("Preparing model, optimizer and dataloaders")
     model, optimizer = accelerator.prepare(model, optimizer)
+
+    use_compile = config.training.get('use_compile', True)
+    compile_mode = config.training.get('compile_mode', "default")
+    if use_compile:
+        try:
+            if hasattr(torch, "compile"):
+                compile_kwargs = {"mode": compile_mode}
+                model = torch.compile(model, **compile_kwargs)
+                logger.info(f"Enabled torch.compile with mode={compile_mode}")
+            else:
+                logger.warning("torch.compile is unavailable in the installed torch version.")
+        except Exception as exc:
+            logger.warning(f"Failed to enable torch.compile: {exc}. Continuing without compilation.")
+            use_compile = False
+    
+    if accelerator.is_main_process:
+        print(model)
 
     ##################################
     #             Training          #
@@ -710,10 +702,11 @@ def main():
 
             # Log metrics
             if (global_step + 1) % config.experiment.log_every == 0:
+                torch.cuda.empty_cache()
                 # 跨 GPU 汇总并计算平均 Loss
-                Loss_flow = accelerator.gather(torch.tensor(loss_flow_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
+                Loss_flow = accelerator.gather(torch.tensor(loss_flow_m.avg, dtype=weight_type, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
                 if pred_act:
-                    Loss_action = accelerator.gather(torch.tensor(loss_action_m.avg, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
+                    Loss_action = accelerator.gather(torch.tensor(loss_action_m.avg, dtype=weight_type, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
                 
                 lr = [group["lr"] for group in optimizer.param_groups]
                 if len(lr) >= 6:
@@ -814,19 +807,20 @@ def save_checkpoint(model, config, accelerator, global_step):
         # Get state_dict first before unwrapping to avoid issues
         # manually unwrap and get state_dict
         temp_model = model
-        if hasattr(model, 'module'):
-            temp_model = model.module
-        # Unwrap torch.compile if present
+        while hasattr(temp_model, '_orig_mod'):
+            temp_model = temp_model._orig_mod
+        while hasattr(temp_model, 'module'):
+            temp_model = temp_model.module
         while hasattr(temp_model, '_orig_mod'):
             temp_model = temp_model._orig_mod
         state_dict = temp_model.state_dict()
         
         # Unwrap model manually to avoid accelerator's unwrap_model issues with torch.compile
         unwrapped_model = model
-        # Unwrap accelerator wrapper
-        if hasattr(model, 'module'):
-            unwrapped_model = model.module
-        # Unwrap torch.compile wrapper if present
+        while hasattr(unwrapped_model, '_orig_mod'):
+            unwrapped_model = unwrapped_model._orig_mod
+        while hasattr(unwrapped_model, 'module'):
+            unwrapped_model = unwrapped_model.module
         while hasattr(unwrapped_model, '_orig_mod'):
             unwrapped_model = unwrapped_model._orig_mod
         

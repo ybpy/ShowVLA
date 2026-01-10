@@ -65,7 +65,7 @@ def convert_anns_for_image(img_name, img_dir, ann_dir, class_dict, out_json_dir,
 
 def convert_ade20k(data_root, split_name):
     dataset_name = f"ade20k_{split_name}"
-    out_json_dir = f"{data_root}/{split_name}_json"
+    out_json_dir = f"{data_root}/{split_name}_json_"
     out_meta_path = f"./ade20k_{split_name}_meta.json"
     meta_dict = {
         "dataset_name": dataset_name,

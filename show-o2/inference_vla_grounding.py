@@ -234,7 +234,7 @@ if __name__ == '__main__':
         return dataloader
 
     dataset = GroundingDataset(
-        metas_path=config.training.coco_metas_path,
+        metas_path=config.training.grounding_metas_path,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=preproc_config.max_vla_seq_len,

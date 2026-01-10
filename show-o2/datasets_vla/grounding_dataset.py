@@ -162,12 +162,12 @@ class GroundingDataset(Dataset):
                 if tgt_img is None:
                     use_bbox = False
                 else:
-                    text = f"Mark all {category} in the image with {bbox_color_name} bounding box. Image with marked {category}:"
+                    text = f"Mark all {category}(s) in the image with {bbox_color_name} bounding box. Image with marked {category}(s):"
             if not use_bbox:
                 mask_color_name = np.random.choice(list(self.mask_colors.keys()))
                 color = self.mask_colors[mask_color_name]
                 tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, color, self.mask_color_weight)
-                text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
+                text = f"Segment all {category}(s) in the image with {mask_color_name} mask. Image with segmented {category}(s):"
         elif 'ade20k' in dataset_name.lower():
             segm_path = data_dict["segm_path"]
             segm = Image.open(segm_path)
@@ -179,14 +179,14 @@ class GroundingDataset(Dataset):
             mask_color_name = np.random.choice(list(self.mask_colors.keys()))
             color = self.mask_colors[mask_color_name]
             tgt_img = get_img_with_segment_mask_ade20k(img, segm, cat_id, color, self.mask_color_weight)
-            text = f"Segment all {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
+            text = f"Segment instance(s) of {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
         else:
             raise NotImplementedError(f"Unsupported grounding dataset: {dataset_name}")
 
-        vis = tgt_img
-        text_clean = text.replace('(', '').replace(')', '').replace('\"', '')
-        print(text_clean)
-        vis.save(f"{idx}_{text_clean}.jpg")
+        # vis = tgt_img
+        # text_clean = text.replace('(', '').replace(')', '').replace('\"', '')
+        # print(text_clean)
+        # vis.save(f"{idx}_{text_clean}.jpg")
 
         text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_img_text_tgt_img_seq(text)
 
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     )
 
     dataset = GroundingDataset(
-        metas_path="./meta_grounding_data/coco",
+        metas_path="./meta_grounding_data/ade20k",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=872,
