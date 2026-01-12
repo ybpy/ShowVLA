@@ -203,7 +203,7 @@ class BaseHDF5Handler(DomainHandler):
         modality_positions.append((cur_len + 1, self.num_image_tokens))
         cur_len = cur_len + 1 + self.num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
         
-        # Language commmand
+        # Language command
         if text.endswith('.'):
             text = text + suffix
         elif text[-1].isalpha():
