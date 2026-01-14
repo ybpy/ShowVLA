@@ -14,7 +14,7 @@
 # limitations under the License.
 # ------------------------------------------------------------------------------
 
-import io, numpy as np, pyarrow.parquet as pq, av, cv2, os
+import io, numpy as np, pyarrow.parquet as pq, av, cv2, os, random, re
 from mmengine import fileio
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
@@ -137,6 +137,139 @@ def get_img_with_segment_mask_ade20k(img, segm, cat_id, mask_color_rgb, mask_col
     img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
     
     return Image.fromarray(img)
+
+
+def get_image_prompt_response_aokvqa(data_root, ann):
+    image_path = os.path.join(data_root, f"{ann['image_id']:012d}.jpg")
+    image = Image.open(image_path).convert('RGB')
+    question = ann['question']
+    
+    choices = ann['choices']
+    options_text = "\nOptions:\n"
+    
+    # Randomize the style of serial mark
+    marker_type = random.choice(['alpha', 'numeric'])
+    decoration = random.choice(['bracket', 'dot'])
+    
+    marks = []
+    for i, choice in enumerate(choices):
+        choice = choice.strip()
+        if marker_type == 'alpha':
+            label = chr(65 + i) # A, B, C...
+        else:
+            label = str(i + 1) # 1, 2, 3...
+            
+        if decoration == 'bracket':
+            mark = f"({label})"
+        else: # dot
+            mark = f"{label}."
+            
+        options_text += f"{mark} {choice}\n"
+        marks.append(mark)
+    
+    correct_idx = ann['correct_choice_idx']
+    answer = choices[correct_idx].strip()
+    correct_mark = marks[correct_idx]
+    longest_rationale = max(ann['rationales'], key=len).strip()
+    if not longest_rationale.endswith('.'):
+        longest_rationale += '.'
+
+    prompt = f"Question: {question}{options_text}\nAnswer with reasoning:\n"
+    response = f"{longest_rationale} So, the answer is {correct_mark} {answer}."
+
+    return image, prompt, response
+
+def get_image_prompt_response_RoboVQA(
+        data_root,
+        ann, 
+        task_names=(
+            "planning:freeform",
+            "immediate_planning_with_context20",
+            "remaining5_planning_with_context20",
+            "success",
+            "affordance:discriminative",
+        ),
+        primary_task="planning:freeform",
+    ):
+    video_path = os.path.join(data_root, ann['video'])
+    container = av.open(video_path)
+    # Get the last frame
+    try:
+        last_frame = None
+        for frame in container.decode(video=0):
+            last_frame = frame
+        if last_frame is not None:
+            image = last_frame.to_image()
+        else:
+            raise ValueError(f"No frames found in video: {video_path}")
+    finally:
+        container.close()
+    
+    text = ann['text']
+    # RoboVQA text can contain multiple tasks, each starting with <task:...>
+    # We split by <task: and filter out empty strings
+    tasks = [t for t in text.split('<task:') if t.strip()]
+
+    task_text = None
+    filtered_tasks = []
+    for t in tasks:
+        if t.startswith(primary_task):
+            task_text = t
+            break
+        if any(t.startswith(name) for name in task_names):
+            filtered_tasks.append(t)
+    if task_text is None and len(filtered_tasks) > 0:
+        task_text = random.choice(filtered_tasks)
+    
+    if task_text is None:
+        return None, None, None
+    
+    # A task segment looks like: name>\nPROMPT <PRED>A: RESPONSE\n</PRED>
+    # We want to extract PROMPT and RESPONSE
+    assert '<PRED>' in task_text
+    prompt_part, response_part = task_text.split('<PRED>', 1)
+    
+    # Clean prompt: remove the task name (everything before the first \n or first >)
+    if '>' in prompt_part:
+        prompt = prompt_part.split('>', 1)[1].strip()
+    else:
+        prompt = prompt_part.strip()
+    assert prompt
+    prompt = prompt[0].upper() + prompt[1:]
+    prompt += '\n'
+    
+    # Clean response: remove 'A: ', any tags like <PRED:ANSWER>, and '</PRED>'
+    # Remove 'A: ' prefix
+    response = response_part.replace('A: ', '', 1).strip()
+    # Remove </PRED> and any trailing whitespace
+    response = response.replace('</PRED>', '').strip()
+    # Remove all nested tags like <PRED:ANSWER>, <PRED:BINARY>, etc.
+    response = re.sub(r'<[^>]+>', '', response).strip()
+
+    if task_text.startswith("immediate_planning_with_context20"):
+        # Transfer immediate_planning_with_context20 to planning:freeform
+        prompt = re.sub(r'\s*last 20 steps:[\s\S]*?(?=Q:)', ' ', prompt)
+        prompt = prompt.replace("immediate next step?", "Next action to achieve the goal?")
+
+    if task_text.startswith("remaining5_planning_with_context20"):
+        # Transfer remaining5_planning_with_context20 to planning:freeform
+        prompt = re.sub(r'\s*last 20 steps:[\s\S]*?(?=Q:)', ' ', prompt)
+        prompt = prompt.replace("next 5 steps?", "To fulfill the goal, what to do next?")
+        match = re.search(r'1-\s*([\s\S]*?)(?:\s*\d+-|$)', response)
+        if match:
+            response = match.group(1).strip()
+
+    if prompt.startswith("Current goal is") and random.random() < 0.5:
+        prompt = prompt.replace("Current goal is", "The objective is")
+
+    assert response
+    if response.lower() == 'done':
+        return None, None, None
+    response = response[0].upper() + response[1:]
+    if not response.endswith('.'):
+        response += '.'
+    
+    return image, prompt, response
 
 
 def read_bytes(path: str) -> bytes:

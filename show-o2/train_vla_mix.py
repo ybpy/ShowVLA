@@ -57,7 +57,7 @@ if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
 from datasets_vla import GroundingDataset, MixedDataLoader
-from datasets_vla import create_dataloader
+from datasets_vla import create_dataloader, create_video_dataset_loader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
 
@@ -89,11 +89,12 @@ def main():
     )
 
     bs_grounding = config.training.batch_size_grounding
+    bs_video = config.training.batch_size_video
     bs_vla = config.training.batch_size_vla
 
     if "concat" in config.dataset.mixed_loader_mode:
         assert config.dataset.accumulation == 1, "No need to enable accumulation in mixed-dataloader!"
-        total_batch_size_per_gpu = bs_grounding + bs_vla
+        total_batch_size_per_gpu = bs_grounding + bs_video + bs_vla
         total_batch_size_without_accum = total_batch_size_per_gpu * accelerator.num_processes
         total_batch_size = total_batch_size_without_accum * config.training.gradient_accumulation_steps
     else:
@@ -488,6 +489,19 @@ def main():
     train_dataloader_grounding = create_grounding_dataloader(dataset,
                                                      config.training.batch_size_grounding,
                                                      dataset.collate_fn)
+
+    # Dataloader for Video Dataset (e.g., Something-Something-V2)
+    train_dataloader_video = create_video_dataset_loader(
+        num_workers=dataset_config.num_workers,
+        batch_size=config.training.batch_size_video,
+        metas_paths=config.training.video_metas_paths,
+        text_tokenizer=text_tokenizer,
+        showo_token_ids=showo_token_ids,
+        max_seq_len=preproc_config.max_vla_seq_len,
+        image_size=preproc_config.vla_image_size,
+        num_image_tokens=preproc_config.num_vla_image_tokens,
+        training=True,
+    )
     
     # X-VLA dataloader
     xvla_loader = create_dataloader(
@@ -507,7 +521,7 @@ def main():
 
     # Combine these dataloaders into a single iterable
     mixed_loader = MixedDataLoader(
-        loader_list=[train_dataloader_grounding, xvla_loader],
+        loader_list=[train_dataloader_grounding, train_dataloader_video, xvla_loader],
         samp_probs=config.dataset.samp_probs,
         accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode

@@ -6,7 +6,7 @@ import random
 import numpy as np
 import torch
 import av
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, DataLoader
 from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
@@ -126,15 +126,7 @@ class SSv2Dataset(IterableDataset):
         return text_tokens, text_labels, modality_positions, text_mask, image_mask
 
     def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            samples = self.all_samples
-        else:
-            per_worker = int(np.ceil(len(self.all_samples) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.all_samples))
-            samples = self.all_samples[iter_start:iter_end]
+        samples = self.all_samples
 
         if self.training:
             random.shuffle(samples)
@@ -153,7 +145,8 @@ class SSv2Dataset(IterableDataset):
             # Use qdur and fps to determine idx2 (future image)
             offset = int(self.qdur * fps)
             assert offset > 0
-            assert len(frames) > offset, f"{video_path} len(frames)={len(frames)} <= offset={offset}"
+            if len(frames) <= offset:
+                continue
 
             # Time-wise center-clip the video
             while len(frames) > fps * 2.5:
@@ -206,6 +199,35 @@ class SSv2Dataset(IterableDataset):
         return batched
 
 
+def worker_init_fn(worker_id: int):
+    base_seed = torch.initial_seed() % (2**32)
+    import random, numpy as np
+    np.random.seed(base_seed); random.seed(base_seed); torch.manual_seed(base_seed)
+
+def create_video_dataset_loader(
+    num_workers,
+    batch_size, 
+    metas_paths, 
+    text_tokenizer,
+    showo_token_ids,
+    max_seq_len,
+    image_size,
+    num_image_tokens,
+    training,
+):
+    video_dataset = SSv2Dataset(metas_paths, text_tokenizer=text_tokenizer, showo_token_ids=showo_token_ids,
+        max_seq_len=max_seq_len, image_size=image_size, num_image_tokens=num_image_tokens, training=training)
+    return DataLoader(
+        video_dataset, 
+        batch_size=batch_size,
+        collate_fn=video_dataset.collate_fn,
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=worker_init_fn,
+        persistent_workers=True
+    )
+
+
 if __name__ == '__main__':
     from torch.utils.data import DataLoader
     from models.misc import get_text_tokenizer
@@ -227,7 +249,7 @@ if __name__ == '__main__':
         num_image_tokens=420+1,
         training=False,
     )
-    dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=0)
+    dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=4)
 
     output_dir = "vis_ssv2"
     os.makedirs(output_dir, exist_ok=True)
