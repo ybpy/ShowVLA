@@ -598,6 +598,10 @@ def main():
                 # x0->noise x1->image
                 t, x0, x1 = transport.sample(image_latents[i][j][None],
                                             config.training.und_max_t0 if is_obs_img else None)
+                # for future image to predict, x0 is observation image
+                if not is_obs_img:
+                    assert j > 0
+                    x0 = image_latents[i][0][None]
                 # timesteps, noised image, velocity
                 t, xt, ut = transport.path_sampler.plan(t, x0, x1)
                 t_list.append(t)

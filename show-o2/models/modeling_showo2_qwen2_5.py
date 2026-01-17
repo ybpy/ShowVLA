@@ -979,9 +979,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 for j in range(n):
                     is_obs_img = j < num_obs_img
                     # x0->noise x1->image
-                    x1 = image_latents[i][j]
-                    
-                    xt = x1 if is_obs_img else torch.randn_like(x1)
+                    # for observed image, keep as is; for future image, set as observed image
+                    xt = image_latents[i][0]
                     
                     xt_list.append(xt)
 
