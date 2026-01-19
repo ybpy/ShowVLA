@@ -49,7 +49,8 @@ class InfiniteDataReader(IterableDataset):
                  max_seq_len: int = 1600,
                  image_size = 432,
                  num_image_tokens: int = 729,
-                 pred_act: bool = False
+                 pred_act: bool = False,
+                 random_query_duration: bool = False
                  ):
         self.num_views = num_views
         self.training = training
@@ -87,6 +88,7 @@ class InfiniteDataReader(IterableDataset):
         self.image_size = image_size
         self.num_image_tokens = num_image_tokens
         self.pred_act = pred_act
+        self.random_query_duration = random_query_duration
 
     def _iter_one_dataset(self, dataset_name: str) -> Iterable[dict]:
         meta = self.metas[dataset_name]
@@ -108,6 +110,7 @@ class InfiniteDataReader(IterableDataset):
                 image_aug=self.image_aug,
                 lang_aug_map= meta["lang_aug_map"] if "lang_aug_map" in meta.keys() else None,
                 action_mode = self.action_mode,
+                random_query_duration = self.random_query_duration
             ):
                 sample["domain_id"] = torch.tensor(DATA_DOMAIN_ID.get(dataset_name, 0))
                 idx_for_delta = meta.get("idx_for_delta", [])

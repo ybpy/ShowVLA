@@ -265,6 +265,7 @@ class BaseHDF5Handler(DomainHandler):
         training: bool,
         image_aug,
         lang_aug_map: dict | None,
+        random_query_duration: bool = False,
         **kwargs
     ) -> Iterable[dict]:
         """Open once, yield many samples; file is always closed on exit."""
@@ -278,7 +279,7 @@ class BaseHDF5Handler(DomainHandler):
             # Language
             ins = self.read_instruction(f)
             # Domain-specific kinematics and timing
-            left, right, lt, rt, freq, qdur = self.build_left_right(f)
+            left, right, lt, rt, freq, qdur_max, qdur_min = self.build_left_right(f)
         
         
         # image_mask = torch.zeros(self.num_views, dtype=torch.bool)
@@ -299,6 +300,13 @@ class BaseHDF5Handler(DomainHandler):
         assert V == 1
         for idx in idxs:
 
+            # Randomly sample query duration
+            if random_query_duration:
+                qdur = random.uniform(qdur_min, qdur_max)
+                qdur = int(qdur * freq) / freq
+            else:
+                qdur = qdur_max
+            
             # Query future window
             cur = ref[idx]
             q = np.linspace(cur, min(cur + qdur, float(ref.max())), num_actions + 1, dtype=np.float32)

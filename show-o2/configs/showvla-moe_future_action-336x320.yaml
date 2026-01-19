@@ -115,6 +115,7 @@ dataset:
     samp_probs: null
     accumulation: 1
     mixed_loader_mode: "sequential_max_size_cycle"
+    random_query_duration: True
     params:
         train_mixed_modal_shards_path_or_url: "/path/to/your/images/train"
         annotation_path: "/path/to/your/vist_train_annotations.json"

@@ -111,11 +111,11 @@ class LiberoHandler(BaseHDF5Handler):
     def build_left_right(
         self, f: h5py.File
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
-        freq, qdur = 30.0, 1.0
+        freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
         a = f["abs_action_6d"][()]                             # [T,10]
         left = np.concatenate([a[:, :9], (a[:, 9:] > 0.0)], axis=-1)
         right = np.zeros_like(left)
-        return left, right, None, None, freq, qdur
+        return left, right, None, None, freq, qdur_max, qdur_min
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         return range(0, max(0, T_left - 10))

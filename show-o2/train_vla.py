@@ -455,6 +455,7 @@ def main():
 
     
     # Iterable dataloader
+    random_query_duration = config.dataset.random_query_duration if 'random_query_duration' in config.dataset else False
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -468,6 +469,7 @@ def main():
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
         pred_act=pred_act,
+        random_query_duration=random_query_duration
     )
 
 
