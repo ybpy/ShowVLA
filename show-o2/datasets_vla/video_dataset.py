@@ -89,10 +89,8 @@ class SSv2Dataset(IterableDataset):
         # Language command
         if text.endswith('.'):
             text = text + suffix
-        elif text[-1].isalpha():
-            text = text + '.' + suffix
         else:
-            raise ValueError(f"Unsupported Language Instruction: {text}")
+            text = text + '.' + suffix
         
         lang_tokens = self.text_tokenizer(text, add_special_tokens=False, truncation=False).input_ids
         text_tokens.extend(lang_tokens)
@@ -110,7 +108,7 @@ class SSv2Dataset(IterableDataset):
         text_labels = [-100] + text_labels + [self.eos_id]
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
 
-        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"text: {text}\nlen(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
         text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)

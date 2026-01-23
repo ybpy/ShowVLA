@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-future_act_seed"
-    output_dir: "showvla-future_act_seed"
+    name: "showvla-future_act_weighted"
+    output_dir: "showvla-future_act_weighted"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -48,6 +48,7 @@ model:
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
         frozen_params: null
         params_not_load: [ 'lm_head' ]
+        use_img_trans_field: False
         pred_act: True 
         xvla_hidden_size: 1024
         xvla_depth: 1
@@ -115,7 +116,6 @@ dataset:
     samp_probs: null
     accumulation: 1
     mixed_loader_mode: "sequential_max_size_cycle"
-    random_query_duration: True
     params:
         train_mixed_modal_shards_path_or_url: "/path/to/your/images/train"
         annotation_path: "/path/to/your/vist_train_annotations.json"
@@ -165,7 +165,7 @@ optimizer:
         learning_rate_showo_expert: 0.00025
         learning_rate_act: 0.0001
         learning_rate_soft_prompt: 0.000015
-        learning_rate_project_xvla: 0.0006
+        learning_rate_project_xvla: 0.0005
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -197,18 +197,19 @@ transport:
 xvla:
     num_actions: 30
     action_mode: ee6d
+    random_query_duration: False
 
 training:
     use_lora: False
     lr_multipler: 10.0
     use_compile: True
     compile_mode: "default"
-    
-    train_metas_path: ./meta_libero_data
-    batch_size_vla: 2
+
+    train_metas_path: ./meta_libero_data/split_spatial_object_goal_10
+    batch_size_vla: 6
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 12
+    gradient_accumulation_steps: 4
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2

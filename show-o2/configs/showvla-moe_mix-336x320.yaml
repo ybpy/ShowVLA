@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_ssv2"
-    output_dir: "showvla-mix_ssv2"
+    name: "showvla-mix_weighted"
+    output_dir: "showvla-mix_weighted"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -48,6 +48,7 @@ model:
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
         frozen_params: null
         params_not_load: null
+        use_img_trans_field: False
         pred_act: False 
         xvla_hidden_size: null
         xvla_depth: 1
@@ -128,7 +129,7 @@ dataset:
         persistent_workers: True
 
     preprocessing:
-        max_vla_seq_len: 880
+        max_vla_seq_len: 872
         vla_image_size: [336, 320]
         num_vla_image_tokens: 420
 
@@ -204,12 +205,12 @@ training:
     compile_mode: "default"
 
     grounding_metas_path: ./meta_grounding_data
-    batch_size_grounding: 2
-    video_metas_paths:
-        - ../../datasets/Something-Something-V2/labels/train.json
-        - ../../datasets/Something-Something-V2/labels/validation.json
-    batch_size_video: 2
-    train_metas_path: ./meta_libero_data/merged_all
+    batch_size_grounding: 4
+    video_metas_paths: null
+        # - ../../datasets/Something-Something-V2/labels/train.json
+        # - ../../datasets/Something-Something-V2/labels/validation.json
+    batch_size_video: 0
+    train_metas_path: ./meta_libero_data/split_all
     batch_size_vla: 4
     action_coeff: 1.0
 

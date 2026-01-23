@@ -168,6 +168,7 @@ def main():
         raise NotImplementedError
 
     # Initialize Show-o model
+    use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
     pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
@@ -182,6 +183,7 @@ def main():
             use_safetensors=False,
             low_cpu_mem_usage=False,
             device_map=None,
+            use_img_trans_field=use_img_trans_field,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
             xvla_depth=config.model.showo.get('xvla_depth', 2),
             action_dim=config.model.showo.get('action_dim', 20),
@@ -455,7 +457,7 @@ def main():
 
     
     # Iterable dataloader
-    random_query_duration = config.dataset.random_query_duration if 'random_query_duration' in config.dataset else False
+    random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -601,7 +603,7 @@ def main():
                 t, x0, x1 = transport.sample(image_latents[i][j][None],
                                             config.training.und_max_t0 if is_obs_img else None)
                 # for future image to predict, x0 is observation image
-                if not is_obs_img:
+                if use_img_trans_field and not is_obs_img:
                     assert j > 0
                     x0 = image_latents[i][0][None]
                 # timesteps, noised image, velocity

@@ -64,6 +64,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             add_time_embeds=True,
             add_qk_norm=False,
             clip_pretrained_model_path="google/siglip-so400m-patch14-384",
+            use_img_trans_field=False,
             xvla_hidden_size=1024,
             xvla_depth=2,
             action_dim=20,
@@ -112,6 +113,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             nn.GELU(),
             nn.Linear(hidden_size, hidden_size)
         )
+
+        self.use_img_trans_field = use_img_trans_field
 
         if xvla_hidden_size:
             self.xvla_hidden_size = xvla_hidden_size
@@ -978,9 +981,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             for i in range(b):
                 for j in range(n):
                     is_obs_img = j < num_obs_img
-                    # x0->noise x1->image
-                    # for observed image, keep as is; for future image, set as observed image
+                    # x0: src or noise, x1: tgt
                     xt = image_latents[i][0]
+                    if not self.use_img_trans_field and not is_obs_img:
+                        xt = torch.randn_like(xt)
                     
                     xt_list.append(xt)
 

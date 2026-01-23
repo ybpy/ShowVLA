@@ -172,6 +172,7 @@ def main():
         raise NotImplementedError
 
     # Initialize Show-o model
+    use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
     pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
@@ -186,6 +187,7 @@ def main():
             use_safetensors=False,
             low_cpu_mem_usage=False,
             device_map=None,
+            use_img_trans_field=use_img_trans_field,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
             xvla_depth=config.model.showo.get('xvla_depth', 2),
             action_dim=config.model.showo.get('action_dim', 20),
@@ -457,6 +459,23 @@ def main():
     #################################
     logger.info("Creating dataloaders and lr_scheduler")
 
+    # X-VLA dataloader
+    xvla_loader = create_dataloader(
+        num_workers=dataset_config.num_workers,
+        batch_size=config.training.batch_size_vla,
+        metas_path=config.training.train_metas_path,
+        num_actions=config.xvla.num_actions,
+        action_mode=config.xvla.action_mode,
+        training=True,
+        text_tokenizer=text_tokenizer,
+        showo_token_ids=showo_token_ids,
+        max_seq_len=preproc_config.max_vla_seq_len,
+        image_size=preproc_config.vla_image_size,
+        num_image_tokens=preproc_config.num_vla_image_tokens,
+        pred_act=pred_act,
+    )
+    loader_list = [xvla_loader]
+
     def create_grounding_dataloader(dataset, batch_size, collate_fn):
         if accelerator.num_processes > 1:
             sampler = DistributedSampler(dataset,
@@ -478,50 +497,39 @@ def main():
                                         persistent_workers=True)
         return dataloader
 
-    dataset = GroundingDataset(
-        metas_path=config.training.grounding_metas_path,
-        text_tokenizer=text_tokenizer,
-        showo_token_ids=showo_token_ids,
-        max_seq_len=preproc_config.max_vla_seq_len,
-        image_size=preproc_config.vla_image_size,
-        num_image_tokens=preproc_config.num_vla_image_tokens,
-    )
-    train_dataloader_grounding = create_grounding_dataloader(dataset,
-                                                     config.training.batch_size_grounding,
-                                                     dataset.collate_fn)
+    if config.training.grounding_metas_path:
+        dataset = GroundingDataset(
+            metas_path=config.training.grounding_metas_path,
+            text_tokenizer=text_tokenizer,
+            showo_token_ids=showo_token_ids,
+            max_seq_len=preproc_config.max_vla_seq_len,
+            image_size=preproc_config.vla_image_size,
+            num_image_tokens=preproc_config.num_vla_image_tokens,
+        )
+        train_dataloader_grounding = create_grounding_dataloader(dataset,
+                                                        config.training.batch_size_grounding,
+                                                        dataset.collate_fn)
+        loader_list.append(train_dataloader_grounding)
 
-    # Dataloader for Video Dataset (e.g., Something-Something-V2)
-    train_dataloader_video = create_video_dataset_loader(
-        num_workers=dataset_config.num_workers,
-        batch_size=config.training.batch_size_video,
-        metas_paths=config.training.video_metas_paths,
-        text_tokenizer=text_tokenizer,
-        showo_token_ids=showo_token_ids,
-        max_seq_len=preproc_config.max_vla_seq_len,
-        image_size=preproc_config.vla_image_size,
-        num_image_tokens=preproc_config.num_vla_image_tokens,
-        training=True,
-    )
+    if config.training.video_metas_paths:
+        # Dataloader for Video Dataset (e.g., Something-Something-V2)
+        train_dataloader_video = create_video_dataset_loader(
+            num_workers=dataset_config.num_workers,
+            batch_size=config.training.batch_size_video,
+            metas_paths=config.training.video_metas_paths,
+            text_tokenizer=text_tokenizer,
+            showo_token_ids=showo_token_ids,
+            max_seq_len=preproc_config.max_vla_seq_len,
+            image_size=preproc_config.vla_image_size,
+            num_image_tokens=preproc_config.num_vla_image_tokens,
+            training=True,
+        )
+        loader_list.append(train_dataloader_video)
     
-    # X-VLA dataloader
-    xvla_loader = create_dataloader(
-        num_workers=dataset_config.num_workers,
-        batch_size=config.training.batch_size_vla,
-        metas_path=config.training.train_metas_path,
-        num_actions=config.xvla.num_actions,
-        action_mode=config.xvla.action_mode,
-        training=True,
-        text_tokenizer=text_tokenizer,
-        showo_token_ids=showo_token_ids,
-        max_seq_len=preproc_config.max_vla_seq_len,
-        image_size=preproc_config.vla_image_size,
-        num_image_tokens=preproc_config.num_vla_image_tokens,
-        pred_act=pred_act,
-    )
-
+    
     # Combine these dataloaders into a single iterable
     mixed_loader = MixedDataLoader(
-        loader_list=[train_dataloader_grounding, train_dataloader_video, xvla_loader],
+        loader_list=loader_list,
         samp_probs=config.dataset.samp_probs,
         accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
@@ -655,7 +663,7 @@ def main():
                 t, x0, x1 = transport.sample(image_latents[i][j][None],
                                             config.training.und_max_t0 if is_obs_img else None)
                 # for future image to predict, x0 is observation image
-                if not is_obs_img:
+                if use_img_trans_field and not is_obs_img:
                     assert j > 0
                     x0 = image_latents[i][0][None]
                 # timesteps, noised image, velocity
