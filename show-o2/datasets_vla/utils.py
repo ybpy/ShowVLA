@@ -179,17 +179,44 @@ def get_image_prompt_response_aokvqa(data_root, ann):
 
     return image, prompt, response
 
+def extract_robovqa_response(task_text):
+    """从单个任务文本中提取清洗后的 response，如果是 'done' 则返回 None"""
+    if '<PRED>' not in task_text:
+        return None
+    _, response_part = task_text.split('<PRED>', 1)
+    # Remove 'A: ' prefix
+    response = response_part.replace('A: ', '', 1).strip()
+    # Remove </PRED> and any trailing whitespace
+    response = response.replace('</PRED>', '').strip()
+    # Remove all nested tags like <PRED:ANSWER>, <PRED:BINARY>, etc.
+    response = re.sub(r'<[^>]+>', '', response).strip()
+
+    response = response.replace('\n', ' ')
+
+    # Special processing for remaining5_planning_with_context20: extract only the first step
+    if task_text.startswith("remaining5_planning_with_context20"):
+        match = re.search(r'1-\s*([\s\S]*?)(?:\s*\d+-|$)', response)
+        if match:
+            response = match.group(1).strip()
+    
+    if not response or response.lower() == 'done':
+        return None
+    return response
+
 def get_image_prompt_response_RoboVQA(
         data_root,
         ann, 
-        task_names=(
+        primary_tasks=(
             "planning:freeform",
             "immediate_planning_with_context20",
             "remaining5_planning_with_context20",
+        ),
+        secondary_tasks=(
             "success",
+        ),
+        tertiary_tasks=(
             "affordance:discriminative",
         ),
-        primary_task="planning:freeform",
     ):
     video_path = os.path.join(data_root, ann['video'])
     container = av.open(video_path)
@@ -209,25 +236,27 @@ def get_image_prompt_response_RoboVQA(
     # RoboVQA text can contain multiple tasks, each starting with <task:...>
     # We split by <task: and filter out empty strings
     tasks = [t for t in text.split('<task:') if t.strip()]
+    random.shuffle(tasks)
 
     task_text = None
-    filtered_tasks = []
-    for t in tasks:
-        if t.startswith(primary_task):
-            task_text = t
+    for priority_tasks in (primary_tasks, secondary_tasks, tertiary_tasks):
+        for t in tasks:
+            if any(t.startswith(name) for name in priority_tasks) and extract_robovqa_response(t) is not None:
+                task_text = t
+                break
+        if task_text:
             break
-        if any(t.startswith(name) for name in task_names):
-            filtered_tasks.append(t)
-    if task_text is None and len(filtered_tasks) > 0:
-        task_text = random.choice(filtered_tasks)
     
     if task_text is None:
         return None, None, None
     
+    # Extract response using helper
+    response = extract_robovqa_response(task_text)
+    assert response is not None
+
     # A task segment looks like: name>\nPROMPT <PRED>A: RESPONSE\n</PRED>
-    # We want to extract PROMPT and RESPONSE
-    assert '<PRED>' in task_text
-    prompt_part, response_part = task_text.split('<PRED>', 1)
+    # We want to extract PROMPT
+    prompt_part, _ = task_text.split('<PRED>', 1)
     
     # Clean prompt: remove the task name (everything before the first \n or first >)
     if '>' in prompt_part:
@@ -236,16 +265,20 @@ def get_image_prompt_response_RoboVQA(
         prompt = prompt_part.strip()
     assert prompt
     prompt = prompt[0].upper() + prompt[1:]
+
+    if task_text.startswith("success") or task_text.startswith("affordance:discriminative"):
+        assert response in ["yes", "no"]
+        use_true_false = random.random() < 0.5
+        if use_true_false:
+            prompt += " Answer with True or False."
+            response = response.replace("yes", "True")
+            response = response.replace("no", "False")
+        else:
+            prompt += " Answer with Yes or No."
+            response = response.replace("yes", "Yes")
+            response = response.replace("no", "No")
     prompt += '\n'
     
-    # Clean response: remove 'A: ', any tags like <PRED:ANSWER>, and '</PRED>'
-    # Remove 'A: ' prefix
-    response = response_part.replace('A: ', '', 1).strip()
-    # Remove </PRED> and any trailing whitespace
-    response = response.replace('</PRED>', '').strip()
-    # Remove all nested tags like <PRED:ANSWER>, <PRED:BINARY>, etc.
-    response = re.sub(r'<[^>]+>', '', response).strip()
-
     if task_text.startswith("immediate_planning_with_context20"):
         # Transfer immediate_planning_with_context20 to planning:freeform
         prompt = re.sub(r'\s*last 20 steps:[\s\S]*?(?=Q:)', ' ', prompt)
@@ -255,10 +288,7 @@ def get_image_prompt_response_RoboVQA(
         # Transfer remaining5_planning_with_context20 to planning:freeform
         prompt = re.sub(r'\s*last 20 steps:[\s\S]*?(?=Q:)', ' ', prompt)
         prompt = prompt.replace("next 5 steps?", "To fulfill the goal, what to do next?")
-        match = re.search(r'1-\s*([\s\S]*?)(?:\s*\d+-|$)', response)
-        if match:
-            response = match.group(1).strip()
-
+    
     if prompt.startswith("Current goal is") and random.random() < 0.5:
         prompt = prompt.replace("Current goal is", "The objective is")
 

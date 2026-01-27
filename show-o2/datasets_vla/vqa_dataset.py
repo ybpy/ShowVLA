@@ -4,17 +4,18 @@ import json
 import os
 import random
 import glob
+import re
 import numpy as np
 import torch
 import av
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
 from datasets_vla.utils import get_image_prompt_response_aokvqa, get_image_prompt_response_RoboVQA
 
-class VQADataset(IterableDataset):
+class VQADataset(Dataset):
     """
     Dataset for Single-image VQA.
     Directly uses the original label JSON files.
@@ -51,10 +52,33 @@ class VQADataset(IterableDataset):
                 # Load all jsonline files within it
                 json_files = sorted(glob.glob(os.path.join(label_path, "*.json")))
                 count = 0
+                from datasets_vla.utils import extract_robovqa_response
+                task_names = (
+                    "planning:freeform",
+                    "immediate_planning_with_context20",
+                    "remaining5_planning_with_context20",
+                    "success",
+                    "affordance:discriminative",
+                )
                 for json_file in json_files:
                     with open(json_file, 'r') as f:
                         for line in f:
                             item = json.loads(line)
+
+                            # Filter RoboVQA tasks and keep only those that are not 'done'
+                            tasks = [t for t in item['text'].split('<task:') if t.strip()]
+                            valid_tasks = []
+                            for t in tasks:
+                                if any(t.startswith(name) for name in task_names):
+                                    if extract_robovqa_response(t) is not None:
+                                        valid_tasks.append(t)
+
+                            if not valid_tasks:
+                                continue
+
+                            # # Reconstruct the text with only valid tasks
+                            # item['text'] = "".join(["<task:" + t for t in valid_tasks])
+
                             # The videos are in ../../videos relative to the json/ directory
                             base_dir = os.path.normpath(label_path)
                             data_root = os.path.join(os.path.dirname(os.path.dirname(base_dir)), "videos")
@@ -140,51 +164,42 @@ class VQADataset(IterableDataset):
 
         return text_tokens, text_labels, modality_positions, text_mask, image_mask
 
-    def __iter__(self):
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            samples = self.all_samples
-        else:
-            per_worker = int(np.ceil(len(self.all_samples) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.all_samples))
-            samples = self.all_samples[iter_start:iter_end]
+    def __len__(self):
+        return len(self.all_samples)
 
-        if self.training:
-            random.shuffle(samples)
+    def __getitem__(self, index):
+        item = self.all_samples[index]
+        data_root = item['data_root']
+        ann = item['ann']
 
-        for item in samples:
-            data_root = item['data_root']
-            ann = item['ann']
-
-            if 'aokvqa' in data_root:
-                image, prompt, response = get_image_prompt_response_aokvqa(data_root, ann)
-            elif 'RoboVQA' in data_root:
+        if 'aokvqa' in data_root:
+            image, prompt, response = get_image_prompt_response_aokvqa(data_root, ann)
+        elif 'RoboVQA' in data_root:
+            try:
                 image, prompt, response = get_image_prompt_response_RoboVQA(data_root, ann)
-                if image is None:
-                    continue
-            else:
-                raise NotImplementedError
+            except:
+                return self.__getitem__(random.randint(0, len(self.all_samples) - 1))
+        else:
+            raise NotImplementedError
 
-            image = self.image_transform(image)
-            # [C H W] -> [1 C H W]
-            image = image.unsqueeze(0)
+        if image is None:
+            print(ann, flush=True)
 
-            text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_seq(prompt, response)
+        image = self.image_transform(image)
+        # [C H W] -> [1 C H W]
+        image = image.unsqueeze(0)
 
-            yield {
-                'language_instruction': f"{prompt}{response}",
-                'text_tokens': text_tokens,
-                'text_labels': text_labels,
-                'images': image,
-                'modality_positions': modality_positions,
-                'text_masks': text_mask,
-                'image_masks': image_mask,
-            }
+        text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_seq(prompt, response)
 
-        if self.training:
-            yield from self.__iter__()
+        return {
+            'language_instruction': f"{prompt}{response}",
+            'text_tokens': text_tokens,
+            'text_labels': text_labels,
+            'images': image,
+            'modality_positions': modality_positions,
+            'text_masks': text_mask,
+            'image_masks': image_mask,
+        }
 
     def collate_fn(self, batch: list) -> dict:
         batched = collections.defaultdict(list)
@@ -210,23 +225,26 @@ if __name__ == '__main__':
     )
 
     dataset = VQADataset(
-        metas_paths="/home/hyx/datasets/RoboVQA/json/val",
+        metas_paths="/home/hyx/datasets/RoboVQA/json/train",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=872,
         image_size=(336, 320),
         num_image_tokens=420+1,
-        training=False,
+        training=True,
     )
-    dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=4, shuffle=True)
 
-    output_dir = "vis_vqa"
+    output_dir = "vis_vqa_RoboVQA_train"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving visualizations to {output_dir}...")
 
+    from collections import defaultdict
+    qestion_counts = defaultdict(int)
+
     sample_count = 0
     for i, data in enumerate(dataloader):
-        if i >= 100:
+        if i >= 1000:
             break
         print(f"[BATCH {i}]")
 
@@ -247,4 +265,8 @@ if __name__ == '__main__':
             save_image(img, save_path)
             print(f"{texts[j]}\n")
             sample_count += 1
-        print()
+
+            question = texts[j].split('\n')[-2].split(' Q: ')[-1]
+            qestion_counts[question] += 1
+        print(f"{dict(qestion_counts)}\n")
+        print(flush=True)
