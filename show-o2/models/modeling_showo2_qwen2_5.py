@@ -360,7 +360,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         logits, last_hidden_states = outputs['logits'], outputs['hidden_states'][-1]
 
         if text_labels is not None:
-            loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
+            loss_ntp = next_token_prediction(logits, text_labels, self.showo.vocab_size)
             return logits, loss_ntp
         else:
             return logits

@@ -761,6 +761,8 @@ def main():
                                                 actions=action_positions if pred_act else None,
                                                 ).to(weight_type)
 
+            torch.cuda.empty_cache()
+
             _, _, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
                                                 t=t.to(weight_type),
@@ -795,7 +797,7 @@ def main():
                                                 accelerator.device,
                                                 ).to(weight_type)
 
-            _, loss_ntp, _, _ = model.forward_und_only(text_tokens=text_tokens,
+            _, loss_ntp = model.forward_und_only(text_tokens=text_tokens,
                                     image_latents=image_latents,
                                     t=t.to(weight_type),
                                     attention_mask=vqa_block_mask,

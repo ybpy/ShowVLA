@@ -225,7 +225,7 @@ if __name__ == '__main__':
     )
 
     dataset = VQADataset(
-        metas_paths="/home/hyx/datasets/RoboVQA/json/train",
+        metas_paths="/home/hyx/datasets/aokvqa/aokvqa_v1p0_train.json",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=872,
@@ -235,7 +235,7 @@ if __name__ == '__main__':
     )
     dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=4, shuffle=True)
 
-    output_dir = "vis_vqa_RoboVQA_train"
+    output_dir = "vis_vqa_aokvqa_v1p0_train"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving visualizations to {output_dir}...")
 
