@@ -15,3 +15,9 @@
 | Spatial | Object | Goal | Long |
 | :---: | :---: | :---: | :---: |
 | 91.2% | 98.8% | 97.8% | 88.2% |
+
+20260128 +something-something-v2 on stage1, weighted LIBERO data
+
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 95.4% | 97.6% | 94.8% | 79.8% |
