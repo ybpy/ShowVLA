@@ -20,7 +20,7 @@ pip install omegaconf==2.3.0;
 pip install torchdiffeq==0.2.5;
 pip install segment_anything==1.0;
 pip install wandb==0.19.7;
-
+pip install datasets
 
 pip install ninja packaging wheel
 # 设置临时目录到 conda 环境目录，避免跨设备链接错误
