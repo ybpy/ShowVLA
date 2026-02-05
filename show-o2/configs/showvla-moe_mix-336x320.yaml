@@ -10,7 +10,7 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 experiment:
     project: "show-vla"
     name: "showvla-mix_weighted_itf"
-    output_dir: "showvla-mix_weighted"
+    output_dir: "showvla-mix_weighted_itf"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
