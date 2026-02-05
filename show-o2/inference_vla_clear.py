@@ -74,6 +74,7 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # Initialize Show-o model
+    use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
     pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
@@ -277,10 +278,10 @@ if __name__ == '__main__':
         for i in range(b):
             for j in range(n):
                 is_obs_img = j < num_obs_img
-                # x0->noise x1->image
-                x1 = image_latents[i][j]
-                
-                xt = x1 if is_obs_img else torch.randn_like(x1)
+                # x0: src or noise, x1: tgt
+                xt = image_latents[i][0]
+                if not use_img_trans_field and not is_obs_img:
+                    xt = torch.randn_like(xt)
                 
                 xt_list.append(xt)
 
