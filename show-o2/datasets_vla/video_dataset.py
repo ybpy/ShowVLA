@@ -132,6 +132,12 @@ class SSv2Dataset(IterableDataset):
         for item in samples:
             video_path = os.path.join(item['data_root'], f"{item['id']}.webm")
             text = item['label']
+
+            if len(text) > 100:
+                continue
+
+            if text.startswith("holding"):
+                continue
             
             # Use PyAV to read frames from webm
             container = av.open(video_path)
@@ -156,8 +162,6 @@ class SSv2Dataset(IterableDataset):
                 frames = frames[:-int(fps/2)]
             elif text.startswith("showing"):
                 offset = int(len(frames) * 0.9)
-            elif text.startswith("holding"):
-                offset = min(offset*2, int(len(frames) * 0.9))
                 
 
             # Randomly pick idx1, then idx2 is idx1 + offset
@@ -238,24 +242,25 @@ if __name__ == '__main__':
         llm_name="qwen2_5"
     )
 
-    dataset = SSv2Dataset(
-        metas_paths="/home/hyx/datasets/Something-Something-V2/labels/validation.json",
+    dataloader = create_video_dataset_loader(
+        num_workers=4,
+        batch_size=2,
+        metas_paths="/home/hyx/datasets/Something-Something-V2/labels/train.json",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=872,
+        max_seq_len=880,
         image_size=(336, 320),
         num_image_tokens=420+1,
-        training=False,
+        training=True,
     )
-    dataloader = DataLoader(dataset, batch_size=4, collate_fn=dataset.collate_fn, num_workers=4)
 
-    output_dir = "vis_ssv2"
+    output_dir = "vis_ssv2_"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving visualizations to {output_dir}...")
 
     sample_count = 0
     for i, data in enumerate(dataloader):
-        if i >= 100:
+        if i >= 10000:
             break
         print(f"[BATCH {i}]")
         

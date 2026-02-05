@@ -208,6 +208,10 @@ training:
         - ../../datasets/RoboVQA/json/train
         - ../../datasets/aokvqa/aokvqa_v1p0_train.json
         - ../../datasets/aokvqa/aokvqa_v1p0_val.json
+    eo_subsets:
+        - qa-task_planning
+        - qa-episode_caption
+        - qa-relation_reasoning
     batch_size_vqa: 2
     ntp_coeff: 0.2
 

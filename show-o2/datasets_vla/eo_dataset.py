@@ -114,6 +114,10 @@ class EO_VQADataset(Dataset):
         text_tokens.extend(prompt_tokens)
         cur_len += len(prompt_tokens)
 
+        if cur_len >= self.max_seq_len:
+            print(f"{cur_len} >= {self.max_seq_len}\n{prompt}{response}", flush=True)
+            return None
+
         # Response part
         response_tokens = self.text_tokenizer(response, add_special_tokens=False).input_ids
         text_tokens.extend(response_tokens)
@@ -124,11 +128,9 @@ class EO_VQADataset(Dataset):
         # BOS and EOS
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
         text_labels = [-100] + text_labels + [self.eos_id]
-
-        assert len(text_tokens) == len(text_labels)
         
         # Padding or Truncation
-        assert len(text_tokens) <= self.max_seq_len, f"{len(text_tokens)}\n{prompt}{response}"
+        # assert len(text_tokens) <= self.max_seq_len, f"{len(text_tokens)}\n{prompt}{response}"
         if len(text_tokens) > self.max_seq_len:
             text_tokens = text_tokens[:self.max_seq_len]
             text_labels = text_labels[:self.max_seq_len]
@@ -164,7 +166,7 @@ class EO_VQADataset(Dataset):
         
         prompt = sample['conversation'][0]['value']
         response = sample['conversation'][1]['value']
-        if len(prompt) + len(response) > 666:
+        if len(prompt) > 500:
             return self.__getitem__(random.randint(0, len(self) - 1))
         assert prompt.startswith('<image>') and not prompt.startswith('<image><image>'), sample['conversation']
         prompt = prompt[len('<image>'):]
@@ -174,7 +176,10 @@ class EO_VQADataset(Dataset):
         # [C H W] -> [1 C H W]
         image = image.unsqueeze(0)
 
-        text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_seq(prompt, response)
+        try:
+            text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_seq(prompt, response)
+        except:
+            return self.__getitem__(random.randint(0, len(self) - 1))
 
         return {
             'language_instruction': f"{prompt}{response}",
@@ -220,7 +225,7 @@ if __name__ == '__main__':
         ],
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=600,
+        max_seq_len=560,
         image_size=(336, 320),
         num_image_tokens=420+1,
         training=True,

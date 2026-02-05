@@ -58,7 +58,7 @@ class VQADataset(Dataset):
                     "immediate_planning_with_context20",
                     "remaining5_planning_with_context20",
                     "success",
-                    "affordance:discriminative",
+                    # "affordance:discriminative",
                 )
                 for json_file in json_files:
                     with open(json_file, 'r') as f:
@@ -228,7 +228,7 @@ if __name__ == '__main__':
         metas_paths="/home/hyx/datasets/aokvqa/aokvqa_v1p0_train.json",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=872,
+        max_seq_len=600,
         image_size=(336, 320),
         num_image_tokens=420+1,
         training=True,

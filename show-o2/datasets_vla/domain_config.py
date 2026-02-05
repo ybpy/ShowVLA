@@ -17,11 +17,12 @@
 from __future__ import annotations
 
 DATA_WEIGHTS = {
-    "libero_spatial": 1.0,
-    "libero_object": 1.0,
-    "libero_goal": 1.0,
-    "libero_10": 1.5,
-    "libero_90": 2,
+    "libero_spatial": 0.1,
+    "libero_object": 0.1,
+    "libero_goal": 0.1,
+    "libero_10": 0.15,
+    "libero_90": 0.2,
+    "Calvin": 0.3,
 
     "robomind-franka": 0.1,
     "robomind-ur": 0.1,

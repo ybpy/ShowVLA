@@ -19,6 +19,8 @@ import torch
 from torch.utils.data import DataLoader
 from .dataset import InfiniteDataReader
 
+from .vqa_dataset import VQADataset
+from .eo_dataset import EO_VQADataset
 from .grounding_dataset import GroundingDataset
 from .video_dataset import create_video_dataset_loader
 from .mixed_dataloader import MixedDataLoader

@@ -56,7 +56,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets_vla import VQADataset, GroundingDataset, MixedDataLoader
+from datasets_vla import VQADataset, EO_VQADataset, GroundingDataset, MixedDataLoader
 from datasets_vla import create_dataloader, create_video_dataset_loader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
@@ -535,11 +535,20 @@ def main():
         mode=config.dataset.mixed_loader_mode
     )
 
-    vqa_dataset = VQADataset(
-        metas_paths=config.training.vqa_metas_paths,
+    # vqa_dataset = VQADataset(
+    #     metas_paths=config.training.vqa_metas_paths,
+    #     text_tokenizer=text_tokenizer,
+    #     showo_token_ids=showo_token_ids,
+    #     max_seq_len=512,
+    #     image_size=preproc_config.vla_image_size,
+    #     num_image_tokens=preproc_config.num_vla_image_tokens,
+    #     training=True,
+    # )
+    vqa_dataset = EO_VQADataset(
+        eo_subsets=config.training.eo_subsets,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=preproc_config.max_vla_seq_len,
+        max_seq_len=560,
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
         training=True,
