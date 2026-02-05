@@ -9,7 +9,7 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted"
+    name: "showvla-mix_weighted_itf"
     output_dir: "showvla-mix_weighted"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
@@ -48,7 +48,7 @@ model:
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
         frozen_params: null
         params_not_load: null
-        use_img_trans_field: False
+        use_img_trans_field: True
         pred_act: False 
         xvla_hidden_size: null
         xvla_depth: 1
