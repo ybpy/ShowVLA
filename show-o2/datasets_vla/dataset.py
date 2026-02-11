@@ -50,7 +50,8 @@ class InfiniteDataReader(IterableDataset):
                  image_size = 432,
                  num_image_tokens: int = 729,
                  pred_act: bool = False,
-                 random_query_duration: bool = False
+                 random_query_duration: bool = False,
+                 num_future_imgs: int = 1,
                  ):
         self.num_views = num_views
         self.training = training
@@ -74,10 +75,10 @@ class InfiniteDataReader(IterableDataset):
             self.image_height, self.image_width = image_size[0], image_size[1]
 
         self.image_aug = [
-            transforms.Resize((self.image_height, self.image_width*2), interpolation=InterpolationMode.BICUBIC),
+            transforms.Resize((self.image_height, self.image_width), interpolation=InterpolationMode.BICUBIC),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.) \
                 if training else transforms.Lambda(lambda x: x),
-            transforms.ToTensor(),
+            # transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
         ]
         self.image_aug = transforms.Compose(self.image_aug)
@@ -89,6 +90,7 @@ class InfiniteDataReader(IterableDataset):
         self.num_image_tokens = num_image_tokens
         self.pred_act = pred_act
         self.random_query_duration = random_query_duration
+        self.num_future_imgs = num_future_imgs
 
     def _iter_one_dataset(self, dataset_name: str) -> Iterable[dict]:
         meta = self.metas[dataset_name]
@@ -110,7 +112,8 @@ class InfiniteDataReader(IterableDataset):
                 image_aug=self.image_aug,
                 lang_aug_map= meta["lang_aug_map"] if "lang_aug_map" in meta.keys() else None,
                 action_mode = self.action_mode,
-                random_query_duration = self.random_query_duration
+                random_query_duration = self.random_query_duration,
+                num_future_imgs = self.num_future_imgs,
             ):
                 sample["domain_id"] = torch.tensor(DATA_DOMAIN_ID.get(dataset_name, 0))
                 idx_for_delta = meta.get("idx_for_delta", [])

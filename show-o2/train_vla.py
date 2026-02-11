@@ -458,6 +458,7 @@ def main():
     
     # Iterable dataloader
     random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
+    num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -471,7 +472,8 @@ def main():
         image_size=preproc_config.vla_image_size,
         num_image_tokens=preproc_config.num_vla_image_tokens,
         pred_act=pred_act,
-        random_query_duration=random_query_duration
+        random_query_duration=random_query_duration,
+        num_future_imgs=num_future_imgs,
     )
 
 
@@ -628,6 +630,58 @@ def main():
 
         return xt, t, ut, masks
 
+    @torch.no_grad()
+    def prepare_video_latents_and_labels(
+            pixel_values: Union[torch.FloatTensor, torch.LongTensor],
+            image_masks,
+            modality_positions,
+            num_obs_img=1,
+    ):
+        # b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
+        if config.model.vae_model.type == 'wan21':
+            # (b, 5, 3, h, w)
+            pixel_values = rearrange(pixel_values, "b n c h w -> b c n h w")    # (b, 3, 5, h, w)
+            image_latents = vae_model.sample(pixel_values)                      # (b, 16, 2, h/8, w/8)
+            image_latents = image_latents.transpose(1, 2)                       # (b, 2, 16, h/8, w/8)
+            b, n, c, h, w = image_latents.shape
+        else:
+            raise NotImplementedError
+
+        t_list, xt_list, ut_list = [], [], []
+        masks = image_masks # b l
+        for i in range(b):
+            for j in range(n):
+                is_obs_img = j < num_obs_img
+                # x0->noise x1->image
+                t, x0, x1 = transport.sample(image_latents[i][j][None],
+                                            config.training.und_max_t0 if is_obs_img else None)
+                # for future image to predict, x0 is observation image
+                if use_img_trans_field and not is_obs_img:
+                    assert j > 0
+                    x0 = image_latents[i][0][None]
+                # timesteps, noised image, velocity
+                t, xt, ut = transport.path_sampler.plan(t, x0, x1)
+                t_list.append(t)
+                xt_list.append(xt)
+                ut_list.append(ut)
+                if is_obs_img:
+                    assert j == 0, f"Only the first image is observation"
+                    assert t == 1.0, f"The observation image should not be noisy"
+                    # Do not calcuate the generation loss for the observation image
+                    img_sid, length = modality_positions[i, j]
+                    masks[i, img_sid: img_sid + length] = 0
+
+        t = torch.stack(t_list, dim=0).squeeze(-1)
+        xt = torch.cat(xt_list, dim=0)
+        ut = torch.cat(ut_list, dim=0)
+
+        ut = ut.reshape(b * n, c, h, w)
+        xt = xt.reshape(b * n, c, h, w)
+        t = t.reshape(b * n)
+
+        return xt, t, ut, masks
+
+
     # Initialize loss meters for logging
     loss_flow_m = AverageMeter()
     loss_action_m = AverageMeter()
@@ -651,10 +705,20 @@ def main():
                 domain_id = batch['domain_id'].to(accelerator.device)
                 action_labels = actions.clone().to(accelerator.device)
                 t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
+            
             # prepare image latents and labels
-            image_latents, t, image_labels, image_masks = prepare_latents_and_labels(pixel_values,
-                                                                                        image_masks,
-                                                                                        modality_positions)
+            if num_future_imgs == 1:
+                image_latents, t, image_labels, image_masks = prepare_latents_and_labels(pixel_values,
+                                                                                            image_masks,
+                                                                                            modality_positions)
+            elif num_future_imgs == 4:
+                image_latents, t, image_labels, image_masks = prepare_video_latents_and_labels(pixel_values,
+                                                                                            image_masks,
+                                                                                            modality_positions)
+            else:
+                raise NotImplementedError
+
+
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),

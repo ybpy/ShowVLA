@@ -266,6 +266,7 @@ class BaseHDF5Handler(DomainHandler):
         image_aug,
         lang_aug_map: dict | None,
         random_query_duration: bool = False,
+        num_future_imgs: int = 1,
         **kwargs
     ) -> Iterable[dict]:
         """Open once, yield many samples; file is always closed on exit."""
@@ -320,28 +321,25 @@ class BaseHDF5Handler(DomainHandler):
             if training and lang_aug_map and ins in lang_aug_map:
                 ins = random.choice(lang_aug_map[ins])
 
-            future_idx = int(min(idx + qdur*freq, ref.max() * freq))
+            future_idx_max = int(min(idx + qdur*freq, ref.max() * freq))
+            future_indices = np.linspace(idx, future_idx_max, num_future_imgs + 1, dtype=int).tolist()
+            future_indices = future_indices[1:]
             
-            # Augment (Concatenate first, then split)
-            concatenated_imgs = []
+            img_seqs = []
             for v in range(V):
-                img_curr = self._pil_from_arr(images[v][idx])
-                img_future = self._pil_from_arr(images[v][future_idx])
-                concatenated_arr = np.concatenate([np.array(img_curr), np.array(img_future)], axis=1)
-                # print(f"src image.shape: {concatenated_arr.shape}", flush=True)
-                concatenated_imgs.append(image_aug(Image.fromarray(concatenated_arr)))
+                img_curr = np.array(self._pil_from_arr(images[v][idx]))
+                img_seq = [img_curr]
+                for future_idx in future_indices:
+                    img_future = np.array(self._pil_from_arr(images[v][future_idx]))
+                    img_seq.append(img_future)
+                img_seq = np.stack(img_seq, axis=0)
+                img_seq = torch.from_numpy(img_seq).permute(0, 3, 1, 2)
+                img_seq = img_seq.float() / 255.0
+                # Augment
+                img_seqs.append(image_aug(img_seq))
 
-            # Split into current and future images
-            # Each tensor has shape [C, H, 2*W], split into two [C, H, W] tensors
-            imgs = []
-            future_imgs = []
-            for concat_tensor in concatenated_imgs:
-                split_width = concat_tensor.shape[2] // 2
-                imgs.append(concat_tensor[:, :, :split_width])
-                future_imgs.append(concat_tensor[:, :, split_width:])
-
-            assert len(imgs) == len(future_imgs) == 1
-            image = torch.stack(imgs + future_imgs, dim=0)  # [2, C, H, W]
+            assert len(img_seqs) == 1
+            image = img_seqs[0]
             # print(f"tgt image.shape: {image.shape}", flush=True)
 
             if self.pred_act:

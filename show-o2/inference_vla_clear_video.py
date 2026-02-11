@@ -40,6 +40,9 @@ if torch.cuda.is_available():
 
 from transport import Sampler, create_transport
 
+import mediapy
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -229,6 +232,7 @@ if __name__ == '__main__':
     # Iterable dataloader
     random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
+    assert num_future_imgs == 4
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -249,16 +253,14 @@ if __name__ == '__main__':
     dtype = weight_type
 
     @torch.no_grad()
-    def prepare_image_latents(pixel_values, num_obs_img=1):
-        b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
+    def prepare_video_latents(pixel_values, num_obs_img=1):
+        # b, n, pixel_c, pixel_h, pixel_w = pixel_values.shape
         if config.model.vae_model.type == 'wan21':
-            # (b, n, 3, 256, 256)
-            pixel_values = rearrange(pixel_values, "b n c h w -> (b n) c h w")
-            pixel_values = pixel_values.unsqueeze(2)    # b*n c 1 h w
-            image_latents = vae_model.sample(pixel_values)
-            image_latents = image_latents.squeeze(2)    # (b*n latent_c latent_h latent_w) == (b*n, 16, 32, 32)
-            _, c, h, w = image_latents.shape
-            image_latents = image_latents.reshape(b, n, c, h, w)
+            # (b, 5, 3, h, w)
+            pixel_values = rearrange(pixel_values, "b n c h w -> b c n h w")    # (b, 3, 5, h, w)
+            image_latents = vae_model.sample(pixel_values)                      # (b, 16, 2, h/8, w/8)
+            image_latents = image_latents.transpose(1, 2)                       # (b, 2, 16, h/8, w/8)
+            b, n, c, h, w = image_latents.shape
         else:
             raise NotImplementedError
 
@@ -302,7 +304,7 @@ if __name__ == '__main__':
             assert text_tokens.size(0) == 1
             print(f"\nsample_idx: {sample_idx}")
             
-            image_latents, t_img = prepare_image_latents(pixel_values)
+            image_latents, t_img = prepare_video_latents(pixel_values)
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),
@@ -325,35 +327,24 @@ if __name__ == '__main__':
                     image_latents[1::2] = image_latents[1::2] + v_pred_[1::2] * dt
                     t_img[1::2] = (t_img[1::2] + dt).clamp(0, 1)
 
+            # 2, 16, h/8, w/8
             samples = image_latents
 
             if config.model.vae_model.type == 'wan21':
-                samples = samples.unsqueeze(2)
+                samples = rearrange(samples, "n c h w -> 1 c n h w")    # 1, 16, 2, h/8, w/8
                 images = vae_model.batch_decode(samples)
-                images = images.squeeze(2)
+                images = rearrange(images, "1 c n h w -> n c h w")      # 5, 3, h, w
             else:
                 raise NotImplementedError
             
-            future_images = images[1:]
-            future_images = denorm(future_images)
+            pred_images = images
+            pred_images = denorm(pred_images)   # 5, h, w, 3
 
-            obs_images = pixel_values[:, 0]
-            obs_images = denorm(obs_images)
+            gt_images = pixel_values[0]
+            gt_images = denorm(gt_images)       # 5, h, w, 3
 
-            gt_images = pixel_values[:, 1]
-            gt_images = denorm(gt_images)
-
-            for i, (obs_img, future_img, gt_img) in enumerate(zip(obs_images, future_images, gt_images)):
-                combine_img = np.concatenate([obs_img, future_img, gt_img], axis=1)
-                combine_img = Image.fromarray(combine_img)
-                combine_img.save(f"demo{sample_idx}_{text}.png")
-
-                # obs_img = Image.fromarray(obs_img)
-                # future_img = Image.fromarray(future_img)
-                # gt_img = Image.fromarray(gt_img)
-                # obs_img.save(f"demo{batch_idx}_{text}_obs.png")
-                # future_img.save(f"demo{batch_idx}_{text}_future.png")
-                # gt_img.save(f"demo{batch_idx}_{text}_gt.png")
+            mediapy.write_video(f"demo_{sample_idx}pred_{text}.mp4", pred_images, fps=1)
+            mediapy.write_video(f"demo_{sample_idx}gt_{text}.mp4", gt_images, fps=1)
             
             sample_idx += 1
         
