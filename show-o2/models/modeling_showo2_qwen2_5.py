@@ -541,15 +541,21 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
 
             if action_tokens is not None: 
+                # last_hidden_states_proj = self.project_xvla_decode(last_hidden_states)
+                # for block in self.blocks:
+                #     last_hidden_states_proj = block(last_hidden_states_proj)
+                
                 # Extract action embeddings from last_hidden_states
                 action_embeds_list = []
                 for i, action_batch in enumerate(action_positions):
                     for j, (offset, length) in enumerate(action_batch):
                         action_embeds_list.append(last_hidden_states[i, offset:offset+length])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
+
                 action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output)
                 for block in self.blocks:
                     action_embeds_from_output = block(action_embeds_from_output)
+
                 # action head to predict actions
                 pred_actions = self.action_decoder(self.norm(action_embeds_from_output[:, self.len_soft_prompts:]), domain_id=domain_id)
             
@@ -952,6 +958,15 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         if config.model.showo.add_time_embeds:
             num_image_tokens += 1
 
+        num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
+        if num_future_imgs == 1:
+            prompt_suffix = " Future image:"
+        elif num_future_imgs > 1:
+            prompt_suffix = " Future video:"
+        else:
+            raise NotImplementedError
+        print(f"num_future_imgs: {num_future_imgs}")
+
         boa_id = showo_token_ids['boa_id']
         eoa_id = showo_token_ids['eoa_id']
         act_pad_id = showo_token_ids['act_pad_id']
@@ -1035,9 +1050,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # Language command
                 text = payload["language_instruction"]
                 if text.endswith("."):
-                    text = text + " Future image:"
+                    text = text + prompt_suffix
                 elif text[-1].isalpha():
-                    text = text + ". Future image:"
+                    text = text + "." + prompt_suffix
                 else:
                     raise ValueError(f"Unsupported Language Instruction: {text}")
                 

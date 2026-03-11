@@ -50,13 +50,13 @@ LIBERO_DATASETS = {
 }
 
 LIBERO_DATASETS_HORIZON = {
-    "libero_goal": 800,
-    "libero_object": 800,
-    "libero_spatial": 800,
-    "libero_10": 900,
-    "libero_90": 800,
-    "libero30": 800,
-    "libero130": 800,
+    "libero_goal": 700,
+    "libero_object": 700,
+    "libero_spatial": 700,
+    "libero_10": 800,
+    "libero_90": 700,
+    "libero30": 700,
+    "libero130": 700,
 }
 
 benchmark_dict = benchmark.get_benchmark_dict()

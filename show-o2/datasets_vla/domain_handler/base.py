@@ -342,8 +342,15 @@ class BaseHDF5Handler(DomainHandler):
             image = img_seqs[0]
             # print(f"tgt image.shape: {image.shape}", flush=True)
 
+            if num_future_imgs == 1:
+                prompt_suffix = " Future image:"
+            elif num_future_imgs > 1:
+                prompt_suffix = " Future video:"
+            else:
+                raise NotImplementedError
+
             if self.pred_act:
-                text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask = self.format_obs_text_future_action_seq(ins)
+                text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask = self.format_obs_text_future_action_seq(ins, suffix=prompt_suffix)
                 yield {
                 "language_instruction": ins,
                 "abs_trajectory": torch.cat([lseq, rseq], -1).float(),
@@ -357,7 +364,7 @@ class BaseHDF5Handler(DomainHandler):
                 'action_masks': action_mask,
                 }
             else: 
-                text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins)
+                text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins, suffix=prompt_suffix)
                 yield {
                 "language_instruction": ins,
                 "abs_trajectory": torch.cat([lseq, rseq], -1).float(),

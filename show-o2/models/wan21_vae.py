@@ -690,9 +690,9 @@ class WanVAE:
 
 
 if __name__ == '__main__':
-    model = WanVAE(vae_pth="/mnt/bn/vgfm2/test_mlx/xavier/code/0923/show-o-next-v5/Wan2.1_VAE.pth")
+    model = WanVAE(vae_pth="/home/hyx/ShowVLA/show-o2/Wan2.1_VAE.pth")
 
-    video = torch.randn(2, 3, 1, 256, 256).cuda()
+    video = torch.randn(2, 3, 5, 432, 432).cuda()
     z, feats = model.sample(video, return_features=True)
     output = model.batch_decode(z)
     print(z.shape, output.shape, feats.shape)
