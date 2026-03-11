@@ -10,17 +10,35 @@
 | :---: | :---: | :---: | :---: |
 | 92.6% | 96.0% | 98.2% | 48.4% |
 
-20260122 weighted LIBERO data
+20260122 weighted LIBERO data (Long: 0.1  -> 0.15)
 
 | Spatial | Object | Goal | Long |
 | :---: | :---: | :---: | :---: |
 | 91.2% | 98.8% | 97.8% | 88.2% |
 
-20260128 +something-something-v2 on stage1, weighted LIBERO data
+20260128 +something-something-v2 on stage1, weighted LIBERO data (Long: 0.1  -> 0.15)
 
 | Spatial | Object | Goal | Long |
 | :---: | :---: | :---: | :---: |
 | 95.4% | 97.6% | 94.8% | 79.8% |
+
+20260215 future image -> future 4 frames, weighted LIBERO data (Long: 0.1  -> 0.15)
+
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 91.2% | 99.4% | 97.6% | 77.2% |
+
+20260305 weighted LIBERO data (Spatial: 0.1 -> 0.11, Long: 0.15  -> 0.18)
+
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 93.8% | 99.6% | 98.6% | 85% |
+
+20260311 remove grounding, weighted LIBERO data (Spatial: 0.1 -> 0.11, Long: 0.15  -> 0.18)
+
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 92.4% | 99.4% | 98% | 80% |
 
 # Data
 ## COCO Data
