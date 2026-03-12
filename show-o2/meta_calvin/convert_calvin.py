@@ -139,6 +139,6 @@ if __name__ == '__main__':
     os.makedirs(train_dir, exist_ok=True)
     save_to_lmdb(train_dir, os.path.join(input_dir, 'training'), dataset_name, metainfo_json_out_path, start_index=0)
 
-    # metainfo_json_out_path = f"./test/{dataset_name}_test_metainfo.json"
-    # os.makedirs(test_dir, exist_ok=True)
-    # save_to_lmdb(test_dir, os.path.join(input_dir, 'validation'), dataset_name, metainfo_json_out_path, start_index=0)
+    metainfo_json_out_path = f"./test/{dataset_name}_test_metainfo.json"
+    os.makedirs(test_dir, exist_ok=True)
+    save_to_lmdb(test_dir, os.path.join(input_dir, 'validation'), dataset_name, metainfo_json_out_path, start_index=0)
