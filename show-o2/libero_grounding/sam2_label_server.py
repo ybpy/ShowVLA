@@ -86,6 +86,28 @@ def export_frames_to_jpg(frames_bgr, out_dir, quality=95):
             raise RuntimeError(f"Failed to write frame to {out_path}")
 
 
+def mask_frames_by_camera_view(frames_bgr, camera_view):
+    """根据物体所属视角，对另一视角区域置黑（仅用于 SAM2 输入）。"""
+    if not frames_bgr:
+        return frames_bgr
+
+    h = int(frames_bgr[0].shape[0])
+    split_h = 224 if h == 336 else int(round(h * (2.0 / 3.0)))
+    split_h = max(1, min(split_h, h - 1))
+
+    out = []
+    for frm in frames_bgr:
+        img = frm.copy()
+        if camera_view == "main":
+            # 主视角物体：腕部视角(下半部分)置黑
+            img[split_h:, :, :] = 0
+        elif camera_view == "wrist":
+            # 腕部视角物体：主视角(上半部分)置黑
+            img[:split_h, :, :] = 0
+        out.append(img)
+    return out
+
+
 # ═══════════════════════════ RLE / mask utils ═══════════════════════════
 
 def mask_to_rle_json(mask_uint8):
@@ -97,10 +119,16 @@ def mask_to_rle_json(mask_uint8):
 
 # ═══════════════════════════ SAM2 inference ═══════════════════════════
 
-def run_sam2_on_one_video(predictor, frames_dir, objects, device):
+def run_sam2_on_one_video(predictor, frames_dir, objects, device, prompt_frame_idx=None):
     """
-    objects : list of {"name": str, "points": [[x, y], ...]}
-              每个 object 的所有 point 都是正点 (label=1).
+        objects : list of
+                            {
+                                "name": str,
+                                "prompts": {
+                                        "0":   {"points": [[x, y], ...], "labels": [0/1, ...]},
+                                        "123": {"points": [[x, y], ...], "labels": [0/1, ...]},
+                                }
+                            }
               object i → SAM2 obj_id = i+1
     Returns : frame_idx, bbox_xywh, area, rle, masks
               masks 仅用于渲染视频，不写入 HDF5.
@@ -116,78 +144,130 @@ def run_sam2_on_one_video(predictor, frames_dir, objects, device):
         else torch.autocast("cpu", enabled=False)
     )
 
+    # 自动选择传播锚点：所有已标注帧的中位帧（若为空则回退到 0）
+    if prompt_frame_idx is None:
+        all_prompt_frames = []
+        for obj in objects:
+            prompts = obj.get("prompts") or {}
+            for fidx_str, prompt in prompts.items():
+                if prompt.get("points", []):
+                    all_prompt_frames.append(int(fidx_str))
+        if all_prompt_frames:
+            all_prompt_frames = sorted(all_prompt_frames)
+            prompt_frame_idx = all_prompt_frames[len(all_prompt_frames) // 2]
+        else:
+            prompt_frame_idx = 0
+
     with torch.inference_mode(), autocast_ctx:
         state = predictor.init_state(video_path=str(frames_dir))
 
         for obj_idx, obj in enumerate(objects, start=1):
-            pts = np.array(obj["points"], dtype=np.float32)
-            lbls = np.ones(len(obj["points"]), dtype=np.int32)
-            predictor.add_new_points_or_box(
-                state,
-                frame_idx=0,
-                obj_id=obj_idx,
-                points=pts,
-                labels=lbls,
-            )
+            prompts = obj.get("prompts")
+
+            # 兼容旧格式：只有单帧 points/labels 时，挂到锚点帧
+            if not prompts:
+                prompts = {
+                    str(int(prompt_frame_idx)): {
+                        "points": obj.get("points", []),
+                        "labels": obj.get("labels", [1] * len(obj.get("points", []))),
+                    }
+                }
+
+            for fidx_str, prompt in prompts.items():
+                pts_list = prompt.get("points", [])
+                if not pts_list:
+                    continue
+                pts = np.array(pts_list, dtype=np.float32)
+                lbls = np.array(
+                    prompt.get("labels", [1] * len(pts_list)),
+                    dtype=np.int32,
+                )
+                predictor.add_new_points_or_box(
+                    state,
+                    frame_idx=int(fidx_str),
+                    obj_id=obj_idx,
+                    points=pts,
+                    labels=lbls,
+                )
 
         frame_results = []
         masks_all = []
 
-        for frame_idx_val, obj_ids, mask_logits in predictor.propagate_in_video(state):
-            obj_ids = [int(x) for x in obj_ids]
-            frame_masks, frame_bboxes, frame_areas, frame_rles = [], [], [], []
+        def _collect_from_generator(gen):
+            for frame_idx_val, obj_ids, mask_logits in gen:
+                obj_ids = [int(x) for x in obj_ids]
+                frame_masks, frame_bboxes, frame_areas, frame_rles = [], [], [], []
 
-            for i, oid in enumerate(obj_ids):
-                mask = (mask_logits[i] > 0.0).detach().cpu().numpy().astype(np.uint8)
-                if mask.ndim == 3 and mask.shape[0] == 1:
-                    mask = mask[0]
-                if mask.ndim != 2:
-                    raise RuntimeError(f"Unexpected mask shape: {mask.shape}")
+                for i, oid in enumerate(obj_ids):
+                    mask = (mask_logits[i] > 0.0).detach().cpu().numpy().astype(np.uint8)
+                    if mask.ndim == 3 and mask.shape[0] == 1:
+                        mask = mask[0]
+                    if mask.ndim != 2:
+                        raise RuntimeError(f"Unexpected mask shape: {mask.shape}")
 
-                area_val = int(mask.sum())
-                if area_val > 0:
-                    rle_json = mask_to_rle_json(mask)
-                    rle_dict = json.loads(rle_json)
-                    bbox = mask_utils.toBbox({
-                        "size": rle_dict["size"],
-                        "counts": rle_dict["counts"].encode("utf-8"),
-                    }).astype(np.float32).tolist()
-                else:
-                    bbox = [0.0, 0.0, 0.0, 0.0]
-                    rle_json = ""
+                    area_val = int(mask.sum())
+                    if area_val > 0:
+                        rle_json = mask_to_rle_json(mask)
+                        rle_dict = json.loads(rle_json)
+                        bbox = mask_utils.toBbox({
+                            "size": rle_dict["size"],
+                            "counts": rle_dict["counts"].encode("utf-8"),
+                        }).astype(np.float32).tolist()
+                    else:
+                        bbox = [0.0, 0.0, 0.0, 0.0]
+                        rle_json = ""
 
-                frame_masks.append(mask)
-                frame_bboxes.append(bbox)
-                frame_areas.append(area_val)
-                frame_rles.append(rle_json)
+                    frame_masks.append(mask)
+                    frame_bboxes.append(bbox)
+                    frame_areas.append(area_val)
+                    frame_rles.append(rle_json)
 
-            h, w = frame_masks[0].shape
-            ordered_masks  = np.zeros((num_objects, h, w), dtype=np.uint8)
-            ordered_bboxes = np.zeros((num_objects, 4), dtype=np.float32)
-            ordered_areas  = np.zeros((num_objects,), dtype=np.int32)
-            ordered_rles   = np.array([""] * num_objects, dtype=object)
+                h, w = frame_masks[0].shape
+                ordered_masks  = np.zeros((num_objects, h, w), dtype=np.uint8)
+                ordered_bboxes = np.zeros((num_objects, 4), dtype=np.float32)
+                ordered_areas  = np.zeros((num_objects,), dtype=np.int32)
+                ordered_rles   = np.array([""] * num_objects, dtype=object)
 
-            for li, oid in enumerate(obj_ids):
-                slot = oid - 1
-                ordered_masks[slot]  = frame_masks[li]
-                ordered_bboxes[slot] = np.array(frame_bboxes[li], dtype=np.float32)
-                ordered_areas[slot]  = int(frame_areas[li])
-                ordered_rles[slot]   = frame_rles[li]
+                for li, oid in enumerate(obj_ids):
+                    slot = oid - 1
+                    ordered_masks[slot]  = frame_masks[li]
+                    ordered_bboxes[slot] = np.array(frame_bboxes[li], dtype=np.float32)
+                    ordered_areas[slot]  = int(frame_areas[li])
+                    ordered_rles[slot]   = frame_rles[li]
 
-            frame_results.append({
-                "frame_idx": int(frame_idx_val),
-                "bbox_xywh": ordered_bboxes,
-                "area":      ordered_areas,
-                "rle":       ordered_rles,
-            })
-            masks_all.append(ordered_masks)
+                frame_results.append({
+                    "frame_idx": int(frame_idx_val),
+                    "bbox_xywh": ordered_bboxes,
+                    "area":      ordered_areas,
+                    "rle":       ordered_rles,
+                })
+                masks_all.append(ordered_masks)
 
-    # sort by frame index
-    frame_results = sorted(frame_results, key=lambda x: x["frame_idx"])
-    masks_all = [m for _, m in sorted(
-        [(fr["frame_idx"], mk) for fr, mk in zip(frame_results, masks_all)],
-        key=lambda t: t[0],
-    )]
+        # 以锚点帧双向传播，覆盖全视频
+        _collect_from_generator(
+            predictor.propagate_in_video(
+                state,
+                start_frame_idx=int(prompt_frame_idx),
+                reverse=False,
+            )
+        )
+
+        if int(prompt_frame_idx) > 0:
+            _collect_from_generator(
+                predictor.propagate_in_video(
+                    state,
+                    start_frame_idx=int(prompt_frame_idx),
+                    reverse=True,
+                )
+            )
+
+    # 双向传播会在锚点帧重复，按帧号去重并排序
+    merged = {}
+    for fr, mk in zip(frame_results, masks_all):
+        merged[int(fr["frame_idx"])] = (fr, mk)
+    sorted_items = sorted(merged.items(), key=lambda t: t[0])
+    frame_results = [item[1][0] for item in sorted_items]
+    masks_all = [item[1][1] for item in sorted_items]
 
     fidx  = np.array([r["frame_idx"] for r in frame_results], dtype=np.int32)
     bbox  = np.stack([r["bbox_xywh"] for r in frame_results], axis=0).astype(np.float32)  # [T, N, 4]
@@ -214,8 +294,10 @@ def append_grounding_to_h5(out_path, objects, frame_idx, bbox_xywh, area, rle):
             rle             : [T, N]    string (UTF-8 JSON)
             prompt/
                 obj_0/
-                    points_xy : [K, 2]  float32
-                    labels    : [K]     int32 (all ones)
+                    frame_000000/
+                        points_xy : [K, 2]  float32
+                        labels    : [K]     int32 (1=positive, 0=negative)
+                    frame_000123/ ...
                 obj_1/ ...
     """
     str_dtype = h5py.string_dtype(encoding="utf-8")
@@ -237,8 +319,25 @@ def append_grounding_to_h5(out_path, objects, frame_idx, bbox_xywh, area, rle):
         prompt_grp = g.create_group("prompt")
         for i, obj in enumerate(objects):
             og = prompt_grp.create_group(f"obj_{i}")
-            og.create_dataset("points_xy", data=np.array(obj["points"], dtype=np.float32))
-            og.create_dataset("labels", data=np.ones(len(obj["points"]), dtype=np.int32))
+            og.create_dataset("camera_view", data=obj.get("camera_view", "main"), dtype=str_dtype)
+            prompts = obj.get("prompts")
+            if prompts:
+                for fidx_str, prompt in sorted(prompts.items(), key=lambda kv: int(kv[0])):
+                    fg = og.create_group(f"frame_{int(fidx_str):06d}")
+                    pts = np.array(prompt.get("points", []), dtype=np.float32)
+                    lbs = np.array(
+                        prompt.get("labels", [1] * len(prompt.get("points", []))),
+                        dtype=np.int32,
+                    )
+                    fg.create_dataset("points_xy", data=pts)
+                    fg.create_dataset("labels", data=lbs)
+            else:
+                # 兼容旧格式
+                og.create_dataset("points_xy", data=np.array(obj.get("points", []), dtype=np.float32))
+                og.create_dataset(
+                    "labels",
+                    data=np.array(obj.get("labels", [1] * len(obj.get("points", []))), dtype=np.int32),
+                )
 
         # tracking results
         g.create_dataset("frame_idx", data=frame_idx.astype(np.int32))
@@ -327,10 +426,18 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
     # 已确认的物体（坐标在原图空间，需乘 scale）
     for i, obj in enumerate(completed_objects):
         color = COLORS_BGR[i % len(COLORS_BGR)]
-        for px, py in obj["points"]:
+        labels = obj.get("labels", [1] * len(obj["points"]))
+        for (px, py), lb in zip(obj["points"], labels):
             dx, dy = int(px * scale), int(py * scale)
-            cv2.circle(vis, (dx, dy), 6, color, -1)
-            cv2.circle(vis, (dx, dy), 8, color, 2)
+            if int(lb) == 1:
+                # 正点：实心圆
+                cv2.circle(vis, (dx, dy), 6, color, -1)
+                cv2.circle(vis, (dx, dy), 8, color, 2)
+            else:
+                # 负点：叉号
+                cv2.circle(vis, (dx, dy), 8, color, 2)
+                cv2.line(vis, (dx - 6, dy - 6), (dx + 6, dy + 6), color, 2)
+                cv2.line(vis, (dx - 6, dy + 6), (dx + 6, dy - 6), color, 2)
         if obj["points"]:
             fx = int(obj["points"][0][0] * scale)
             fy = int(obj["points"][0][1] * scale)
@@ -341,13 +448,20 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
     if current_points:
         cidx = len(completed_objects)
         color = COLORS_BGR[cidx % len(COLORS_BGR)]
-        for px, py in current_points:
+        for p in current_points:
+            px, py = p["xy"]
+            lb = p.get("label", 1)
             dx, dy = int(px * scale), int(py * scale)
-            cv2.circle(vis, (dx, dy), 6, color, -1)
-            cv2.circle(vis, (dx, dy), 8, color, 2)
+            if int(lb) == 1:
+                cv2.circle(vis, (dx, dy), 6, color, -1)
+                cv2.circle(vis, (dx, dy), 8, color, 2)
+            else:
+                cv2.circle(vis, (dx, dy), 8, color, 2)
+                cv2.line(vis, (dx - 6, dy - 6), (dx + 6, dy + 6), color, 2)
+                cv2.line(vis, (dx - 6, dy + 6), (dx + 6, dy - 6), color, 2)
         if current_obj_name:
-            fx = int(current_points[0][0] * scale)
-            fy = int(current_points[0][1] * scale)
+            fx = int(current_points[0]["xy"][0] * scale)
+            fy = int(current_points[0]["xy"][1] * scale)
             cv2.putText(vis, f"{current_obj_name} (labeling...)",
                         (fx + 10, fy - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
@@ -358,18 +472,60 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
 # ═══════════════════════════ Status text builder ═══════════════════════════
 
 def build_status_text(state):
-    lines = [f"📌 已标注物体: {len(state['completed_objects'])}"]
+    frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
+    frame_labels = ["初始帧", "1/6帧", "1/3帧", "1/2帧", "2/3帧", "5/6帧"]
+    frame_indices = [int(state.get(f"{k}_frame_idx", 0)) for k in frame_keys]
+
+    def _count_prompt(prompt_dict):
+        labels = prompt_dict.get("labels", [])
+        pos_n = int(np.sum(np.array(labels, dtype=np.int32) == 1)) if labels else 0
+        neg_n = int(np.sum(np.array(labels, dtype=np.int32) == 0)) if labels else 0
+        return len(labels), pos_n, neg_n
+
+    lines = [f"📌 已接受物体: {len(state['completed_objects'])}"]
     for i, o in enumerate(state["completed_objects"]):
-        lines.append(f"  {i + 1}. {o['name']}  ({len(o['points'])} 个点)")
+        view_txt = "主视角" if o.get("camera_view", "main") == "main" else "腕部视角"
+        prompts = o.get("prompts", {})
+        segs = []
+        for k, lb, fidx in zip(frame_keys, frame_labels, frame_indices):
+            p = prompts.get(str(fidx), {"points": [], "labels": []})
+            n, pp, nn = _count_prompt(p)
+            if n > 0:
+                segs.append(f"{lb}({fidx + 1}): {n}点(+{pp}/-{nn})")
+        seg_txt = " | ".join(segs) if segs else "无提示"
+        lines.append(f"  {i + 1}. {o['name']} [{view_txt}]  {seg_txt}")
+
+    draft_obj = state.get("draft_object")
+    if draft_obj is not None:
+        draft_view = "主视角" if draft_obj.get("camera_view", "main") == "main" else "腕部视角"
+        lines.append("\n🧪 待处理物体（可重标注）:")
+        lines.append(f"  • {draft_obj.get('name', '(未命名)')} [{draft_view}]")
 
     if state["phase"] == "clicking":
         lines.append(f"\n🔵 正在标注: {state['current_obj_name']}")
-        lines.append(f"   已点击: {len(state['current_points'])} 个点")
+        cur_view = "主视角" if state.get("current_camera_view", "main") == "main" else "腕部视角"
+        lines.append(f"   当前物体视角: {cur_view}")
+        mode_text = "正点 (+)" if int(state.get("current_click_label", 1)) == 1 else "负点 (-)"
+        lines.append(f"   当前点击类型: {mode_text}")
+        active_key = state.get("active_prompt_key", "f3")
+        cur_points = state.get("current_points", {}).get(active_key, [])
+        cur_labels = [p.get("label", 1) for p in cur_points]
+        cur_pos = int(np.sum(np.array(cur_labels, dtype=np.int32) == 1)) if cur_labels else 0
+        cur_neg = int(np.sum(np.array(cur_labels, dtype=np.int32) == 0)) if cur_labels else 0
+        key_to_idx = {k: i for i, k in enumerate(frame_keys)}
+        ai = key_to_idx.get(active_key, 3)
+        active_name, active_idx = frame_labels[ai], frame_indices[ai]
+        lines.append(f"   当前标注帧: {active_name} ({active_idx + 1})")
+        lines.append(f"   当前帧已点击: {len(cur_points)} 个点 (+{cur_pos} / -{cur_neg})")
+        total_clicks = sum(len(state.get("current_points", {}).get(k, [])) for k in frame_keys)
+        lines.append(f"   当前物体总点数: {total_clicks}")
     elif state["phase"] == "naming":
         if state["completed_objects"]:
-            lines.append("\n💡 输入下一个物体名称，或点击「完成并处理」")
+            lines.append("\n💡 输入下一个物体名称开始标注，或点击「完成文件并处理全部已接受物体」")
         else:
             lines.append("\n💡 请输入物体名称开始标注")
+    elif state["phase"] == "reviewing":
+        lines.append("\n🧪 已生成当前物体预览：可重新标注，或接受该物体继续下一个")
     elif state["phase"] == "all_done":
         lines.append("\n✅ 所有文件已处理完毕！")
 
@@ -466,13 +622,88 @@ def main():
             "file_idx":             0,
             "language_instruction": None,
             "completed_objects":   [],       # [{"name": str, "points": [[x,y], ...]}]
+            "completed_results":   [],       # [{"frame_idx","bbox","area","rle","masks"}] 与 completed_objects 对齐
+            "draft_object":        None,     # 当前待处理（可重标注）的物体
+            "draft_result":        None,     # 当前待处理物体的 tracking 结果
+            "preview_video_path":  None,     # 当前文件的临时预览视频
+            "current_camera_view": "main",  # main | wrist
             "current_obj_name":    "",
-            "current_points":      [],       # [[x,y], ...]
-            "phase":               "idle",   # idle | naming | clicking | processing | all_done
+            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []},
+            "current_click_label": 1,        # 1=positive, 0=negative
+            "f0_frame_idx":        0,        # 0
+            "f1_frame_idx":        0,        # 1/6
+            "f2_frame_idx":        0,        # 1/3
+            "f3_frame_idx":        0,        # 1/2
+            "f4_frame_idx":        0,        # 2/3
+            "f5_frame_idx":        0,        # 5/6
+            "active_prompt_key":   "f0",   # f0|f1|f2|f3|f4|f5
+            "phase":               "idle",   # idle | naming | clicking | reviewing | processing | all_done
             "last_out_hdf5":       None,     # 上次处理输出的 hdf5 路径 (str)
             "last_out_video":      None,     # 上次处理输出的 mp4 路径 (str)
             "last_file_idx":       None,     # 上次处理的 pending 索引
         }
+
+    def _cleanup_preview_video(state):
+        p = state.get("preview_video_path")
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        state["preview_video_path"] = None
+
+    def _aggregate_completed_results(results):
+        if not results:
+            raise ValueError("No completed object results to aggregate.")
+
+        base_fidx = np.array(results[0]["frame_idx"], dtype=np.int32)
+        T = int(base_fidx.shape[0])
+        frame_to_row = {int(f): i for i, f in enumerate(base_fidx.tolist())}
+
+        bboxes, areas, rles, masks = [], [], [], []
+        for r in results:
+            cur_fidx = np.array(r["frame_idx"], dtype=np.int32)
+            cur_bbox = np.array(r["bbox"], dtype=np.float32)
+            cur_area = np.array(r["area"], dtype=np.int32)
+            cur_rle = np.array(r["rle"], dtype=object)
+            cur_masks = np.array(r["masks"], dtype=np.uint8)
+
+            if np.array_equal(cur_fidx, base_fidx):
+                bboxes.append(cur_bbox)
+                areas.append(cur_area)
+                rles.append(cur_rle)
+                masks.append(cur_masks)
+                continue
+
+            if cur_bbox.shape[1] != 1:
+                raise ValueError("Expected single-object result for aggregation.")
+
+            h, w = cur_masks.shape[-2], cur_masks.shape[-1]
+            aligned_bbox = np.zeros((T, 1, 4), dtype=np.float32)
+            aligned_area = np.zeros((T, 1), dtype=np.int32)
+            aligned_rle = np.array([[""] for _ in range(T)], dtype=object)
+            aligned_masks = np.zeros((T, 1, h, w), dtype=np.uint8)
+
+            for i, f in enumerate(cur_fidx.tolist()):
+                row = frame_to_row.get(int(f))
+                if row is None:
+                    continue
+                aligned_bbox[row, 0] = cur_bbox[i, 0]
+                aligned_area[row, 0] = cur_area[i, 0]
+                aligned_rle[row, 0] = cur_rle[i, 0]
+                aligned_masks[row, 0] = cur_masks[i, 0]
+
+            bboxes.append(aligned_bbox)
+            areas.append(aligned_area)
+            rles.append(aligned_rle)
+            masks.append(aligned_masks)
+
+        agg_bbox = np.concatenate(bboxes, axis=1).astype(np.float32)  # [T, N, 4]
+        agg_area = np.concatenate(areas, axis=1).astype(np.int32)     # [T, N]
+        agg_rle = np.concatenate(rles, axis=1).astype(object)          # [T, N]
+        agg_masks = np.concatenate(masks, axis=1).astype(np.uint8)     # [T, N, H, W]
+
+        return base_fidx, agg_bbox, agg_area, agg_rle, agg_masks
 
     def _advance_to_next_unprocessed(state):
         """从当前 file_idx 开始，跳过已有输出的文件（处理刷新后的恢复）."""
@@ -497,11 +728,25 @@ def main():
         print(f"Loading {h5_path.name} …")
         frames, lang = read_all_frames_from_h5(h5_path, args.frames_key)
         _cache_frames(idx, frames)
+        n = len(frames)
         state.update({
             "language_instruction": lang,
             "completed_objects":   [],
+            "completed_results":   [],
+            "draft_object":        None,
+            "draft_result":        None,
+            "preview_video_path":  None,
+            "current_camera_view": "main",
             "current_obj_name":    "",
-            "current_points":      [],
+            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []},
+            "current_click_label": 1,
+            "f0_frame_idx":        0,
+            "f1_frame_idx":        (n // 6) if n else 0,
+            "f2_frame_idx":        (n // 3) if n else 0,
+            "f3_frame_idx":        (n // 2) if n else 0,
+            "f4_frame_idx":        ((2 * n) // 3) if n else 0,
+            "f5_frame_idx":        ((5 * n) // 6) if n else 0,
+            "active_prompt_key":   "f0",
             "phase":               "naming" if frames else "idle",
         })
         return state
@@ -514,10 +759,17 @@ def main():
         lang = state.get("language_instruction") or "(无)"
         frames = _get_frames(state)
         n = len(frames) if frames else 0
+        f0 = int(state.get("f0_frame_idx", 0))
+        f1 = int(state.get("f1_frame_idx", 0))
+        f2 = int(state.get("f2_frame_idx", 0))
+        f3 = int(state.get("f3_frame_idx", 0))
+        f4 = int(state.get("f4_frame_idx", 0))
+        f5 = int(state.get("f5_frame_idx", 0))
         return (
             f"📁 文件: {p.name}\n"
             f"📝 指令: {lang}\n"
             f"🎞️ 帧数: {n}\n"
+            f"🖼️ 标注帧: 0={f0 + 1}, 1/6={f1 + 1}, 1/3={f2 + 1}, 1/2={f3 + 1}, 2/3={f4 + 1}, 5/6={f5 + 1} / {max(n, 1)}\n"
             f"📊 进度: {idx + 1} / {len(pending)}"
         )
 
@@ -525,10 +777,25 @@ def main():
         frames = _get_frames(state)
         if not frames:
             return None
+        active_key = state.get("active_prompt_key", "f3")
+        prompt_idx = int(state.get(f"{active_key}_frame_idx", 0))
+        prompt_idx = max(0, min(prompt_idx, len(frames) - 1))
+
+        # 仅显示当前选中帧上的点
+        completed_on_frame = []
+        for o in state["completed_objects"]:
+            prompt = o.get("prompts", {}).get(str(prompt_idx), {"points": [], "labels": []})
+            completed_on_frame.append({
+                "name": o["name"],
+                "points": prompt.get("points", []),
+                "labels": prompt.get("labels", []),
+            })
+
+        current_on_frame = state["current_points"].get(active_key, [])
         return draw_annotations_on_frame(
-            frames[0],
-            state["completed_objects"],
-            state["current_points"],
+            frames[prompt_idx],
+            completed_on_frame,
+            current_on_frame,
             state["current_obj_name"],
         )
 
@@ -542,8 +809,8 @@ def main():
         gr.Markdown(
             "# 🎯 SAM2 视频物体标注工具\n"
             "**标注流程**: ① 输入物体名称 → ② 确认名称 → "
-            "③ 在图片上点击标注点 → ④ 确认物体 → "
-            "⑤ 继续添加物体 **或** 完成标注并处理"
+            "③ 切换 6 个关键帧（0,1/6,1/3,1/2,2/3,5/6）并添加点（正/负） → ④ 确认物体 → "
+            "⑤ 处理该物体并预览，可重标注；接受后继续下一个"
         )
 
         app_state = gr.State(make_state())
@@ -552,9 +819,10 @@ def main():
             # ---- left column: image + video ----
             with gr.Column(scale=3):
                 image_out = gr.Image(
-                    label="第一帧 — 点击添加标注点",
+                    label="标注帧（可切换 0、1/6、1/3、1/2、2/3、5/6）— 点击添加标注点",
                     type="numpy",
                     interactive=False,
+                    elem_id="sam2-annot-image",
                 )
                 video_out = gr.Video(label="追踪结果预览")
 
@@ -565,7 +833,7 @@ def main():
                 )
                 status_box = gr.Textbox(
                     label="📋 标注状态", interactive=False, lines=8,
-                    value="正在加载 …",
+                    value="正在加载 …\n提示：先选点类型，再左键点击添加",
                 )
 
                 obj_name_in = gr.Textbox(
@@ -574,18 +842,45 @@ def main():
                     interactive=True,
                 )
 
+                click_mode = gr.Radio(
+                    choices=["正点 (+)", "负点 (-)"],
+                    value="正点 (+)",
+                    label="当前点击类型",
+                    interactive=True,
+                )
+
+                frame_mode = gr.Radio(
+                    choices=["初始帧", "1/6帧", "1/3帧", "1/2帧", "2/3帧", "5/6帧"],
+                    value="初始帧",
+                    label="当前标注帧",
+                    interactive=True,
+                )
+
+                camera_mode = gr.Radio(
+                    choices=["主视角", "腕部视角"],
+                    value="主视角",
+                    label="当前物体所属视角（仅影响SAM2输入）",
+                    interactive=True,
+                )
+
+                gr.Markdown("- 点击说明：先选择标注帧与点类型，再用左键点击图片添加点")
+
                 with gr.Row():
                     btn_name     = gr.Button("✏️ 确认名称，开始标注", variant="primary", size="sm")
                     btn_undo_pt  = gr.Button("↩️ 撤销上一个点",      size="sm")
-                    btn_undo_obj = gr.Button("🗑️ 删除上一物体",      size="sm")
 
                 with gr.Row():
                     btn_confirm_obj = gr.Button("✅ 确认当前物体", variant="primary")
-                    btn_done        = gr.Button("🚀 完成标注并处理", variant="stop")
+                    btn_process_obj = gr.Button("🚀 完成标注并处理当前物体", variant="stop")
 
                 with gr.Row():
+                    btn_accept_obj = gr.Button("✅ 接受该物体并继续下一个", variant="primary", size="sm")
+                    btn_redo_obj   = gr.Button("🔄 重新标注该物体", size="sm")
+
+                with gr.Row():
+                    btn_done = gr.Button("🏁 完成文件并处理全部已接受物体", variant="stop")
                     btn_skip = gr.Button("⏭️ 跳过此文件", size="sm")
-                    btn_redo = gr.Button("🔄 删除上次结果，重新标注", size="sm")
+                    btn_redo = gr.Button("🔄 删除上次文件结果并回退", size="sm")
 
         # ════════════════════ event handlers ════════════════════
 
@@ -599,27 +894,51 @@ def main():
                 build_status_text(state),
                 None,   # video_out
                 "",     # clear name input
+                "正点 (+)",
+                "初始帧",
+                "主视角",
             )
 
         def h_confirm_name(state, name):
             """用户确认物体名称 → 进入点击标注阶段."""
             if state["phase"] == "all_done":
-                return state, gr.update(), "✅ 所有文件已完成", ""
+                return state, gr.update(), "✅ 所有文件已完成", "", gr.update()
             name = name.strip()
             if not name:
-                return state, gr.update(), "⚠️ 请输入物体名称！", gr.update()
-            for o in state["completed_objects"]:
-                if o["name"] == name:
-                    return state, gr.update(), f"⚠️ 物体名 '{name}' 已存在，请换一个", gr.update()
+                return state, gr.update(), "⚠️ 请输入物体名称！", gr.update(), gr.update()
             state["current_obj_name"] = name
-            state["current_points"]   = []
+            state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
+            state["current_click_label"] = 1
+            state["draft_object"] = None
+            state["draft_result"] = None
             state["phase"]            = "clicking"
             return (
                 state,
                 get_display_image(state),
                 build_status_text(state),
                 "",   # clear name input
+                gr.update(),
             )
+
+        def h_set_click_mode(state, mode_text):
+            state["current_click_label"] = 0 if mode_text == "负点 (-)" else 1
+            return state, build_status_text(state)
+
+        def h_set_frame_mode(state, mode_text):
+            mapping = {
+                "初始帧": "f0",
+                "1/6帧": "f1",
+                "1/3帧": "f2",
+                "1/2帧": "f3",
+                "2/3帧": "f4",
+                "5/6帧": "f5",
+            }
+            state["active_prompt_key"] = mapping.get(mode_text, "f3")
+            return state, get_display_image(state), build_status_text(state)
+
+        def h_set_camera_mode(state, mode_text):
+            state["current_camera_view"] = "wrist" if mode_text == "腕部视角" else "main"
+            return state, build_status_text(state)
 
         def h_click(state, evt: gr.SelectData):
             """用户在图片上点击 → 添加一个标注点."""
@@ -628,10 +947,16 @@ def main():
             # evt.index → [x, y] 是浏览器显示空间的坐标
             # 需要除以 scale 转换回原图像素坐标（用于 SAM2 推理）
             frames = _get_frames(state)
-            scale = compute_display_scale(frames[0])
+            active_key = state.get("active_prompt_key", "f3")
+            prompt_idx = int(state.get(f"{active_key}_frame_idx", 0))
+            prompt_idx = max(0, min(prompt_idx, len(frames) - 1))
+            scale = compute_display_scale(frames[prompt_idx])
             x_orig = float(evt.index[0]) / scale
             y_orig = float(evt.index[1]) / scale
-            state["current_points"].append([x_orig, y_orig])
+            lb = int(state.get("current_click_label", 1))
+            state["current_points"].setdefault(active_key, []).append(
+                {"xy": [x_orig, y_orig], "label": int(lb)}
+            )
             return (
                 state,
                 get_display_image(state),
@@ -640,69 +965,193 @@ def main():
 
         def h_undo_point(state):
             """撤销最后一个标注点."""
-            if state["phase"] == "clicking" and state["current_points"]:
-                state["current_points"].pop()
+            if state["phase"] == "clicking":
+                active_key = state.get("active_prompt_key", "f3")
+                if state["current_points"].get(active_key):
+                    state["current_points"][active_key].pop()
             return (
                 state,
                 get_display_image(state),
                 build_status_text(state),
             )
 
-        def h_undo_obj(state):
-            """删除最后一个已确认的物体."""
-            msg = ""
-            if state["completed_objects"]:
-                removed = state["completed_objects"].pop()
-                msg = f"\n🗑️ 已删除: {removed['name']}"
-            else:
-                msg = "\n(没有可删除的物体)"
-            return (
-                state,
-                get_display_image(state),
-                build_status_text(state) + msg,
-            )
-
         def h_confirm_obj(state):
-            """确认当前物体标注 → 可以继续下一个物体."""
+            """确认当前物体标注为 draft（待处理，可重标注）."""
             if state["phase"] != "clicking":
-                return state, gr.update(), "⚠️ 没有正在标注的物体", gr.update()
-            if not state["current_points"]:
-                return state, gr.update(), "⚠️ 请至少点击一个标注点", gr.update()
+                return state, gr.update(), "⚠️ 没有正在标注的物体", gr.update(), gr.update()
+
+            total_points = sum(len(v) for v in state["current_points"].values())
+            if total_points == 0:
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 当前物体至少需要在任意一帧点击一个点",
+                    gr.update(),
+                    gr.update(),
+                )
+
+            frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
 
             obj = {
                 "name":   state["current_obj_name"],
-                "points": list(state["current_points"]),
+                "camera_view": state.get("current_camera_view", "main"),
+                "prompts": {},
             }
-            state["completed_objects"].append(obj)
+
+            for fk in frame_keys:
+                pts = state["current_points"].get(fk, [])
+                if not pts:
+                    continue
+                fidx = int(state.get(f"{fk}_frame_idx", 0))
+                obj["prompts"][str(fidx)] = {
+                    "points": [p["xy"] for p in pts],
+                    "labels": [int(p.get("label", 1)) for p in pts],
+                }
+
+            state["draft_object"] = obj
+            state["draft_result"] = None
             state["current_obj_name"] = ""
-            state["current_points"]   = []
+            state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
             state["phase"]            = "naming"
 
             s  = build_status_text(state)
-            s += f"\n\n✅ 物体 '{obj['name']}' 已确认（{len(obj['points'])} 个点）"
-            s += "\n🔄 继续输入下一个物体名称，或点击「完成标注并处理」"
+            s += "\n\n✅ 当前物体已确认为待处理对象。可点击「处理并预览当前物体」进行检查。"
             return (
                 state,
                 get_display_image(state),
                 s,
                 "",   # clear name input
+                gr.update(),
             )
 
-        def h_done(state):
-            """完成所有标注 → 运行 SAM2 追踪 → 保存结果 → 加载下一个文件."""
-            # 如果正在标注且已有点，自动确认
-            if state["phase"] == "clicking" and state["current_points"]:
-                obj = {
-                    "name":   state["current_obj_name"],
-                    "points": list(state["current_points"]),
+        def h_process_obj(state):
+            """仅处理当前 draft 物体并生成预览，便于重标注/接受。"""
+            obj = state.get("draft_object")
+            if obj is None:
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 请先点击「确认当前物体」形成待处理对象",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+
+            idx = state["file_idx"]
+            h5_path = pending[idx]
+            frames = _get_frames(state)
+            preview_video = output_dir / (h5_path.stem + "_preview_current_obj.mp4")
+            camera_view = obj.get("camera_view", "main")
+            masked_frames = mask_frames_by_camera_view(frames, camera_view)
+
+            view_text = "主视角" if camera_view == "main" else "腕部视角"
+            status_lines = [f"⏳ 正在处理当前物体: {obj.get('name', '(未命名)')} [{view_text}] …"]
+            try:
+                with tempfile.TemporaryDirectory(prefix="sam2_frames_") as td:
+                    export_frames_to_jpg(masked_frames, Path(td), args.jpg_quality)
+                    fidx, bbox, area, rle, masks = run_sam2_on_one_video(
+                        predictor,
+                        Path(td),
+                        [obj],
+                        args.device,
+                        prompt_frame_idx=None,
+                    )
+
+                render_grounding_video(
+                    str(preview_video),
+                    frames,
+                    bbox,
+                    masks,
+                    [obj.get("name", "obj1")],
+                    args.render_fps,
+                )
+                state["draft_result"] = {
+                    "frame_idx": fidx,
+                    "bbox": bbox,
+                    "area": area,
+                    "rle": rle,
+                    "masks": masks,
                 }
-                state["completed_objects"].append(obj)
-                state["current_obj_name"] = ""
-                state["current_points"]   = []
+                state["preview_video_path"] = str(preview_video)
+                state["phase"] = "reviewing"
+                status_lines.append("✅ 当前物体预览已生成。可重标注或接受该物体。")
+            except Exception as e:
+                status_lines.append(f"❌ 当前物体处理失败: {e}")
+                traceback.print_exc()
+
+            return (
+                state,
+                get_display_image(state),
+                "\n".join(status_lines) + "\n\n" + build_status_text(state),
+                file_info_text(state),
+                str(preview_video) if preview_video.exists() else None,
+                "",
+            )
+
+        def h_accept_obj(state):
+            """接受当前 draft 物体，加入已接受列表。"""
+            obj = state.get("draft_object")
+            if obj is None:
+                return state, gr.update(), "⚠️ 没有可接受的物体（请先确认并处理）", gr.update()
+            if state.get("draft_result") is None:
+                return state, gr.update(), "⚠️ 请先处理当前物体并检查可视化结果，再决定接受", gr.update()
+            state["completed_objects"].append(obj)
+            state["completed_results"].append(state["draft_result"])
+            state["draft_object"] = None
+            state["draft_result"] = None
+            state["phase"] = "naming"
+            return state, get_display_image(state), build_status_text(state), ""
+
+        def h_redo_obj(state):
+            """将 draft 物体恢复为可编辑，重新标注后再处理。"""
+            obj = state.get("draft_object")
+            if obj is None:
+                return state, gr.update(), "⚠️ 没有可重标注的待处理物体", gr.update(), gr.update(), gr.update()
+
+            state["current_obj_name"] = obj.get("name", "")
+            state["current_camera_view"] = obj.get("camera_view", "main")
+            state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
+            for fk in ["f0", "f1", "f2", "f3", "f4", "f5"]:
+                fidx = int(state.get(f"{fk}_frame_idx", 0))
+                p = obj.get("prompts", {}).get(str(fidx))
+                if p:
+                    state["current_points"][fk] = [
+                        {"xy": xy, "label": int(lb)}
+                        for xy, lb in zip(p.get("points", []), p.get("labels", []))
+                    ]
+
+            state["draft_object"] = None
+            state["draft_result"] = None
+            state["phase"] = "clicking"
+            camera_mode_value = "主视角" if state["current_camera_view"] == "main" else "腕部视角"
+            return state, get_display_image(state), build_status_text(state), gr.update(), gr.update(), camera_mode_value
+
+        def h_done(state):
+            """完成文件：处理全部已接受物体并保存结果，然后加载下一个文件。"""
+            # 若仍在点击阶段，不允许直接完成文件
+            if state["phase"] == "clicking":
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 当前仍在标注中。请先确认当前物体，再处理或完成文件。",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
+
+            if state.get("draft_object") is not None:
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 还有待处理物体。请先处理预览并接受（或重标注）后再完成文件。",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                )
 
             if not state["completed_objects"]:
                 return (state, gr.update(),
-                        "⚠️ 请至少标注一个物体",
+                        "⚠️ 请至少接受一个物体后再完成文件",
                         gr.update(), gr.update(), gr.update())
 
             state["phase"] = "processing"
@@ -719,18 +1168,23 @@ def main():
                 f"   物体数: {len(objects)}",
             ]
             for o in objects:
-                status_lines.append(f"   • {o['name']}: {len(o['points'])} 点")
+                prompts = o.get("prompts", {})
+                used = []
+                for fk, lb in [("f0", "0"), ("f1", "1/6"), ("f2", "1/3"), ("f3", "1/2"), ("f4", "2/3"), ("f5", "5/6")]:
+                    fidx = int(state.get(f"{fk}_frame_idx", 0))
+                    labels = prompts.get(str(fidx), {}).get("labels", [])
+                    if labels:
+                        p = int(np.sum(np.array(labels, dtype=np.int32) == 1))
+                        n = int(np.sum(np.array(labels, dtype=np.int32) == 0))
+                        used.append(f"{lb}帧 {len(labels)}点(+{p}/-{n})")
+                status_lines.append(f"   • {o['name']}: " + (", ".join(used) if used else "无提示"))
 
-            print(f"\n===== Processing {h5_path.name}  ({len(objects)} objects) =====")
+            print(f"\n===== Finalizing {h5_path.name}  ({len(objects)} objects) =====")
 
             frames = _get_frames(state)
             try:
-                # --- export frames → run SAM2 ---
-                with tempfile.TemporaryDirectory(prefix="sam2_frames_") as td:
-                    export_frames_to_jpg(frames, Path(td), args.jpg_quality)
-                    fidx, bbox, area, rle, masks = run_sam2_on_one_video(
-                        predictor, Path(td), objects, args.device,
-                    )
+                # --- aggregate already processed per-object results (no re-run) ---
+                fidx, bbox, area, rle, masks = _aggregate_completed_results(state["completed_results"])
 
                 # --- save hdf5 (NO masks) ---
                 if out_path.exists():
@@ -749,6 +1203,9 @@ def main():
                 status_lines.append(f"✅ 视频:   {out_video.name}")
                 print(f"  saved hdf5 : {out_path}")
                 print(f"  saved video: {out_video}")
+
+                # 删除当前文件临时预览视频（避免残留最后一个物体的 preview）
+                _cleanup_preview_video(state)
 
             except Exception as e:
                 status_lines.append(f"\n❌ 处理失败: {e}")
@@ -786,6 +1243,7 @@ def main():
             if state["file_idx"] >= len(pending):
                 return (state, gr.update(), "✅ 所有文件已完成",
                         gr.update(), "")
+            _cleanup_preview_video(state)
             skipped = pending[state["file_idx"]].name
             print(f"  skipped: {skipped}")
             state["file_idx"] += 1
@@ -811,6 +1269,7 @@ def main():
                 if p and os.path.exists(p):
                     os.remove(p)
                     deleted.append(os.path.basename(p))
+            _cleanup_preview_video(state)
 
             prev_idx = state["last_file_idx"]
             prev_name = pending[prev_idx].name
@@ -841,30 +1300,75 @@ def main():
         # page load
         demo.load(
             h_load, [app_state],
-            [app_state, image_out, info_box, status_box, video_out, obj_name_in],
+            [app_state, image_out, info_box, status_box, video_out, obj_name_in, click_mode, frame_mode, camera_mode],
+            js="""
+            (s) => {
+                // 禁用标注图像上的浏览器右键菜单，避免干扰右键打负点
+                setTimeout(() => {
+                    const root = document.getElementById('sam2-annot-image');
+                    if (!root) return;
+                    root.addEventListener('contextmenu', (e) => e.preventDefault());
+                }, 300);
+                return [s];
+            }
+            """,
+        )
+
+        # switch click mode (positive / negative)
+        click_mode.change(
+            h_set_click_mode, [app_state, click_mode],
+            [app_state, status_box],
+        )
+
+        # switch annotation frame (0 / 1/6 / 1/3 / 1/2 / 2/3 / 5/6)
+        frame_mode.change(
+            h_set_frame_mode, [app_state, frame_mode],
+            [app_state, image_out, status_box],
+        )
+
+        camera_mode.change(
+            h_set_camera_mode, [app_state, camera_mode],
+            [app_state, status_box],
         )
 
         # confirm name — button click OR press Enter in textbox
         for trigger in [btn_name.click, obj_name_in.submit]:
             trigger(
                 h_confirm_name, [app_state, obj_name_in],
-                [app_state, image_out, status_box, obj_name_in],
+                [app_state, image_out, status_box, obj_name_in, frame_mode],
             )
 
         # click on image → add point
         image_out.select(h_click, [app_state], outs_3)
 
-        # undo / delete
+        # undo point
         btn_undo_pt.click(h_undo_point,  [app_state], outs_3)
-        btn_undo_obj.click(h_undo_obj,   [app_state], outs_3)
 
         # confirm current object
         btn_confirm_obj.click(
             h_confirm_obj, [app_state],
+            [app_state, image_out, status_box, obj_name_in, frame_mode],
+        )
+
+        # process and preview current draft object
+        btn_process_obj.click(
+            h_process_obj, [app_state],
+            [app_state, image_out, status_box, info_box, video_out, obj_name_in],
+        )
+
+        # accept current draft object
+        btn_accept_obj.click(
+            h_accept_obj, [app_state],
             [app_state, image_out, status_box, obj_name_in],
         )
 
-        # finish annotation → SAM2 processing
+        # redo current draft object
+        btn_redo_obj.click(
+            h_redo_obj, [app_state],
+            [app_state, image_out, status_box, obj_name_in, frame_mode, camera_mode],
+        )
+
+        # finish current file → process all accepted objects
         btn_done.click(
             h_done, [app_state],
             [app_state, image_out, status_box, info_box, video_out, obj_name_in],
