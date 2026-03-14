@@ -8,10 +8,34 @@ Usage:
         --model_cfg  configs/sam2.1/sam2.1_hiera_b+.yaml \
         --checkpoint /path/to/sam2.1_hiera_base_plus.pt \
         --device cuda \
-        [--port 7860] [--share]
+        [--host 127.0.0.1] [--port 7860] [--share]
 """
 
 import os
+
+
+def _init_runtime_temp_dirs():
+    """确保 Gradio 与 tempfile 使用可写目录，避免 /tmp 权限问题。"""
+    if os.environ.get("GRADIO_TEMP_DIR"):
+        base = os.environ["GRADIO_TEMP_DIR"]
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".cache", "gradio_tmp")
+
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        # 兜底到当前工作目录
+        base = os.path.abspath("./.gradio_tmp")
+        os.makedirs(base, exist_ok=True)
+
+    # Gradio 6.x 会读取该变量作为 DEFAULT_TEMP_DIR
+    os.environ["GRADIO_TEMP_DIR"] = base
+    # tempfile 默认也走同一路径，避免其他临时文件落到 /tmp
+    os.environ.setdefault("TMPDIR", base)
+
+
+_init_runtime_temp_dirs()
+
 import cv2
 import h5py
 import json
@@ -396,7 +420,7 @@ def render_grounding_video(video_path, frames_bgr, bbox_xywh, masks,
                 cv2.putText(
                     frame, label,
                     (x, max(20, y - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA,
                 )
 
         frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
@@ -475,6 +499,7 @@ def build_status_text(state):
     frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
     frame_labels = ["初始帧", "1/6帧", "1/3帧", "1/2帧", "2/3帧", "5/6帧"]
     frame_indices = [int(state.get(f"{k}_frame_idx", 0)) for k in frame_keys]
+    lang = state.get("language_instruction") or "(无)"
 
     def _count_prompt(prompt_dict):
         labels = prompt_dict.get("labels", [])
@@ -482,7 +507,7 @@ def build_status_text(state):
         neg_n = int(np.sum(np.array(labels, dtype=np.int32) == 0)) if labels else 0
         return len(labels), pos_n, neg_n
 
-    lines = [f"📌 已接受物体: {len(state['completed_objects'])}"]
+    lines = [f"📝 当前指令: {lang}", f"📌 已接受物体: {len(state['completed_objects'])}"]
     for i, o in enumerate(state["completed_objects"]):
         view_txt = "主视角" if o.get("camera_view", "main") == "main" else "腕部视角"
         prompts = o.get("prompts", {})
@@ -545,6 +570,8 @@ def parse_args():
     p.add_argument("--overwrite",   action="store_true")
     p.add_argument("--jpg_quality", type=int, default=95)
     p.add_argument("--render_fps",  type=float, default=10.0)
+    p.add_argument("--host",        type=str, default="127.0.0.1",
+                   help="Gradio bind host, use 0.0.0.0 for LAN access")
     p.add_argument("--port",        type=int, default=7860)
     p.add_argument("--share",       action="store_true",
                    help="Create a public Gradio share link")
@@ -641,6 +668,7 @@ def main():
             "last_out_hdf5":       None,     # 上次处理输出的 hdf5 路径 (str)
             "last_out_video":      None,     # 上次处理输出的 mp4 路径 (str)
             "last_file_idx":       None,     # 上次处理的 pending 索引
+            "last_obj_name":       "",      # 记忆上一次输入的物体名称
         }
 
     def _cleanup_preview_video(state):
@@ -803,14 +831,13 @@ def main():
 
     with gr.Blocks(
         title="SAM2 标注工具",
-        theme=gr.themes.Soft(),
     ) as demo:
 
         gr.Markdown(
             "# 🎯 SAM2 视频物体标注工具\n"
-            "**标注流程**: ① 输入物体名称 → ② 确认名称 → "
-            "③ 切换 6 个关键帧（0,1/6,1/3,1/2,2/3,5/6）并添加点（正/负） → ④ 确认物体 → "
-            "⑤ 处理该物体并预览，可重标注；接受后继续下一个"
+            "**标注流程**: ① 输入物体名称并回车确认 → "
+            "② 切换 6 个关键帧（0,1/6,1/3,1/2,2/3,5/6）并添加点（正/负） → "
+            "③ 点击「完成标注并处理当前物体」预览，可重标注；接受后继续下一个"
         )
 
         app_state = gr.State(make_state())
@@ -833,12 +860,12 @@ def main():
                 )
                 status_box = gr.Textbox(
                     label="📋 标注状态", interactive=False, lines=8,
-                    value="正在加载 …\n提示：先选点类型，再左键点击添加",
+                    value="正在加载 …\n提示：先在名称框输入并按回车确认，再选点类型并左键点击添加",
                 )
 
                 obj_name_in = gr.Textbox(
                     label="物体名称",
-                    placeholder="输入名称，如: red_cup  (回车亦可确认)",
+                    placeholder="输入名称，如: red_cup  (回车确认)",
                     interactive=True,
                 )
 
@@ -864,13 +891,12 @@ def main():
                 )
 
                 gr.Markdown("- 点击说明：先选择标注帧与点类型，再用左键点击图片添加点")
+                gr.Markdown("- 名称确认：在“物体名称”输入后按回车，无需点击按钮")
 
                 with gr.Row():
-                    btn_name     = gr.Button("✏️ 确认名称，开始标注", variant="primary", size="sm")
-                    btn_undo_pt  = gr.Button("↩️ 撤销上一个点",      size="sm")
+                    btn_undo_pt  = gr.Button("↩️ 撤销上一个点", size="sm")
 
                 with gr.Row():
-                    btn_confirm_obj = gr.Button("✅ 确认当前物体", variant="primary")
                     btn_process_obj = gr.Button("🚀 完成标注并处理当前物体", variant="stop")
 
                 with gr.Row():
@@ -893,7 +919,7 @@ def main():
                 file_info_text(state),
                 build_status_text(state),
                 None,   # video_out
-                "",     # clear name input
+                state.get("last_obj_name", ""),
                 "正点 (+)",
                 "初始帧",
                 "主视角",
@@ -902,11 +928,12 @@ def main():
         def h_confirm_name(state, name):
             """用户确认物体名称 → 进入点击标注阶段."""
             if state["phase"] == "all_done":
-                return state, gr.update(), "✅ 所有文件已完成", "", gr.update()
+                return state, gr.update(), "✅ 所有文件已完成", state.get("last_obj_name", ""), gr.update()
             name = name.strip()
             if not name:
                 return state, gr.update(), "⚠️ 请输入物体名称！", gr.update(), gr.update()
             state["current_obj_name"] = name
+            state["last_obj_name"] = name
             state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
             state["current_click_label"] = 1
             state["draft_object"] = None
@@ -916,9 +943,27 @@ def main():
                 state,
                 get_display_image(state),
                 build_status_text(state),
-                "",   # clear name input
+                name,
                 gr.update(),
             )
+
+        def _build_object_from_current_clicks(state):
+            frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
+            obj = {
+                "name": state["current_obj_name"],
+                "camera_view": state.get("current_camera_view", "main"),
+                "prompts": {},
+            }
+            for fk in frame_keys:
+                pts = state["current_points"].get(fk, [])
+                if not pts:
+                    continue
+                fidx = int(state.get(f"{fk}_frame_idx", 0))
+                obj["prompts"][str(fidx)] = {
+                    "points": [p["xy"] for p in pts],
+                    "labels": [int(p.get("label", 1)) for p in pts],
+                }
+            return obj
 
         def h_set_click_mode(state, mode_text):
             state["current_click_label"] = 0 if mode_text == "负点 (-)" else 1
@@ -975,63 +1020,39 @@ def main():
                 build_status_text(state),
             )
 
-        def h_confirm_obj(state):
-            """确认当前物体标注为 draft（待处理，可重标注）."""
-            if state["phase"] != "clicking":
-                return state, gr.update(), "⚠️ 没有正在标注的物体", gr.update(), gr.update()
-
-            total_points = sum(len(v) for v in state["current_points"].values())
-            if total_points == 0:
-                return (
-                    state,
-                    gr.update(),
-                    "⚠️ 当前物体至少需要在任意一帧点击一个点",
-                    gr.update(),
-                    gr.update(),
-                )
-
-            frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
-
-            obj = {
-                "name":   state["current_obj_name"],
-                "camera_view": state.get("current_camera_view", "main"),
-                "prompts": {},
-            }
-
-            for fk in frame_keys:
-                pts = state["current_points"].get(fk, [])
-                if not pts:
-                    continue
-                fidx = int(state.get(f"{fk}_frame_idx", 0))
-                obj["prompts"][str(fidx)] = {
-                    "points": [p["xy"] for p in pts],
-                    "labels": [int(p.get("label", 1)) for p in pts],
-                }
-
-            state["draft_object"] = obj
-            state["draft_result"] = None
-            state["current_obj_name"] = ""
-            state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
-            state["phase"]            = "naming"
-
-            s  = build_status_text(state)
-            s += "\n\n✅ 当前物体已确认为待处理对象。可点击「处理并预览当前物体」进行检查。"
-            return (
-                state,
-                get_display_image(state),
-                s,
-                "",   # clear name input
-                gr.update(),
-            )
-
         def h_process_obj(state):
-            """仅处理当前 draft 物体并生成预览，便于重标注/接受。"""
+            """处理当前物体并生成预览（可重标注/接受）。"""
+            if state["phase"] == "clicking":
+                if not state.get("current_obj_name", "").strip():
+                    return (
+                        state,
+                        gr.update(),
+                        "⚠️ 请先在“物体名称”输入名称并按回车确认",
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                    )
+                total_points = sum(len(v) for v in state["current_points"].values())
+                if total_points == 0:
+                    return (
+                        state,
+                        gr.update(),
+                        "⚠️ 当前物体至少需要在任意一帧点击一个点",
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                    )
+                state["draft_object"] = _build_object_from_current_clicks(state)
+                state["draft_result"] = None
+                state["current_obj_name"] = ""
+                state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
+
             obj = state.get("draft_object")
             if obj is None:
                 return (
                     state,
                     gr.update(),
-                    "⚠️ 请先点击「确认当前物体」形成待处理对象",
+                    "⚠️ 没有可处理的物体，请先输入名称回车并完成点击标注",
                     gr.update(),
                     gr.update(),
                     gr.update(),
@@ -1085,7 +1106,7 @@ def main():
                 "\n".join(status_lines) + "\n\n" + build_status_text(state),
                 file_info_text(state),
                 str(preview_video) if preview_video.exists() else None,
-                "",
+                state.get("last_obj_name", ""),
             )
 
         def h_accept_obj(state):
@@ -1100,7 +1121,7 @@ def main():
             state["draft_object"] = None
             state["draft_result"] = None
             state["phase"] = "naming"
-            return state, get_display_image(state), build_status_text(state), ""
+            return state, get_display_image(state), build_status_text(state), state.get("last_obj_name", "")
 
         def h_redo_obj(state):
             """将 draft 物体恢复为可编辑，重新标注后再处理。"""
@@ -1124,7 +1145,7 @@ def main():
             state["draft_result"] = None
             state["phase"] = "clicking"
             camera_mode_value = "主视角" if state["current_camera_view"] == "main" else "腕部视角"
-            return state, get_display_image(state), build_status_text(state), gr.update(), gr.update(), camera_mode_value
+            return state, get_display_image(state), build_status_text(state), state.get("current_obj_name", ""), gr.update(), camera_mode_value
 
         def h_done(state):
             """完成文件：处理全部已接受物体并保存结果，然后加载下一个文件。"""
@@ -1133,7 +1154,7 @@ def main():
                 return (
                     state,
                     gr.update(),
-                    "⚠️ 当前仍在标注中。请先确认当前物体，再处理或完成文件。",
+                    "⚠️ 当前仍在标注中。请先点击「完成标注并处理当前物体」，并接受后再完成文件。",
                     gr.update(),
                     gr.update(),
                     gr.update(),
@@ -1235,7 +1256,7 @@ def main():
                 "\n".join(status_lines),
                 info,
                 str(out_video) if out_video.exists() else None,
-                "",   # clear name input
+                state.get("last_obj_name", ""),
             )
 
         def h_skip(state):
@@ -1253,7 +1274,7 @@ def main():
                 get_display_image(state),
                 f"⏭️ 已跳过 {skipped}\n\n" + build_status_text(state),
                 file_info_text(state),
-                "",   # clear name input
+                state.get("last_obj_name", ""),
             )
 
         def h_redo(state):
@@ -1290,7 +1311,7 @@ def main():
                 msg,
                 file_info_text(state),
                 None,   # clear video preview
-                "",     # clear name input
+                state.get("last_obj_name", ""),
             )
 
         # ════════════════════ wire events ════════════════════
@@ -1331,12 +1352,11 @@ def main():
             [app_state, status_box],
         )
 
-        # confirm name — button click OR press Enter in textbox
-        for trigger in [btn_name.click, obj_name_in.submit]:
-            trigger(
-                h_confirm_name, [app_state, obj_name_in],
-                [app_state, image_out, status_box, obj_name_in, frame_mode],
-            )
+        # confirm name — press Enter in textbox
+        obj_name_in.submit(
+            h_confirm_name, [app_state, obj_name_in],
+            [app_state, image_out, status_box, obj_name_in, frame_mode],
+        )
 
         # click on image → add point
         image_out.select(h_click, [app_state], outs_3)
@@ -1344,13 +1364,7 @@ def main():
         # undo point
         btn_undo_pt.click(h_undo_point,  [app_state], outs_3)
 
-        # confirm current object
-        btn_confirm_obj.click(
-            h_confirm_obj, [app_state],
-            [app_state, image_out, status_box, obj_name_in, frame_mode],
-        )
-
-        # process and preview current draft object
+        # process and preview current object
         btn_process_obj.click(
             h_process_obj, [app_state],
             [app_state, image_out, status_box, info_box, video_out, obj_name_in],
@@ -1388,10 +1402,12 @@ def main():
 
     # ────────────── launch ──────────────
 
-    print(f"Launching Gradio on port {args.port} …")
+    print(f"Launching Gradio on {args.host}:{args.port} …")
     demo.launch(
+        server_name=args.host,
         server_port=args.port,
         share=args.share,
+        theme=gr.themes.Soft(),
         allowed_paths=[str(output_dir)],
     )
 
