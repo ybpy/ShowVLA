@@ -626,6 +626,9 @@ def main():
     # frames_bgr 不存入 gr.State（太大会导致序列化失败 / "unexpected token"）
     # 改为服务端 dict，仅按 file_idx 缓存当前文件帧
     _frame_cache = {}   # {file_idx: list[np.ndarray(BGR)]}
+    # 进程内记录“本次服务运行期间”跳过过的文件。
+    # 仅在 server 存活期间有效；server 重启后会自动清空（符合“重启后重新开始”预期）。
+    _skipped_files_in_runtime = set()  # {str(path)}
 
     def _cache_frames(file_idx, frames_bgr):
         _frame_cache.clear()          # 只保留一个文件，节省内存
@@ -737,9 +740,14 @@ def main():
         """从当前 file_idx 开始，跳过已有输出的文件（处理刷新后的恢复）."""
         idx = state["file_idx"]
         while idx < len(pending):
-            out_path = output_dir / (pending[idx].stem + "_grounding.hdf5")
+            cur_file = pending[idx]
+            out_path = output_dir / (cur_file.stem + "_grounding.hdf5")
+            if str(cur_file) in _skipped_files_in_runtime:
+                print(f"  skip runtime-skipped: {cur_file.name}")
+                idx += 1
+                continue
             if out_path.exists() and not args.overwrite:
-                print(f"  skip already processed: {pending[idx].name}")
+                print(f"  skip already processed: {cur_file.name}")
                 idx += 1
             else:
                 break
@@ -1265,7 +1273,9 @@ def main():
                 return (state, gr.update(), "✅ 所有文件已完成",
                         gr.update(), "")
             _cleanup_preview_video(state)
-            skipped = pending[state["file_idx"]].name
+            skipped_path = pending[state["file_idx"]]
+            _skipped_files_in_runtime.add(str(skipped_path))
+            skipped = skipped_path.name
             print(f"  skipped: {skipped}")
             state["file_idx"] += 1
             state = load_current_file(state)
