@@ -455,13 +455,11 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
             dx, dy = int(px * scale), int(py * scale)
             if int(lb) == 1:
                 # 正点：实心圆
-                cv2.circle(vis, (dx, dy), 6, color, -1)
-                cv2.circle(vis, (dx, dy), 8, color, 2)
+                cv2.circle(vis, (dx, dy), 3, color, -1)
+                cv2.circle(vis, (dx, dy), 4, color, 2)
             else:
-                # 负点：叉号
-                cv2.circle(vis, (dx, dy), 8, color, 2)
-                cv2.line(vis, (dx - 6, dy - 6), (dx + 6, dy + 6), color, 2)
-                cv2.line(vis, (dx - 6, dy + 6), (dx + 6, dy - 6), color, 2)
+                # 负点：空心圆
+                cv2.circle(vis, (dx, dy), 4, color, 2)
         if obj["points"]:
             fx = int(obj["points"][0][0] * scale)
             fy = int(obj["points"][0][1] * scale)
@@ -477,12 +475,10 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
             lb = p.get("label", 1)
             dx, dy = int(px * scale), int(py * scale)
             if int(lb) == 1:
-                cv2.circle(vis, (dx, dy), 6, color, -1)
-                cv2.circle(vis, (dx, dy), 8, color, 2)
+                cv2.circle(vis, (dx, dy), 3, color, -1)
+                cv2.circle(vis, (dx, dy), 4, color, 2)
             else:
-                cv2.circle(vis, (dx, dy), 8, color, 2)
-                cv2.line(vis, (dx - 6, dy - 6), (dx + 6, dy + 6), color, 2)
-                cv2.line(vis, (dx - 6, dy + 6), (dx + 6, dy - 6), color, 2)
+                cv2.circle(vis, (dx, dy), 4, color, 2)
         if current_obj_name:
             fx = int(current_points[0]["xy"][0] * scale)
             fy = int(current_points[0]["xy"][1] * scale)
@@ -496,8 +492,8 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
 # ═══════════════════════════ Status text builder ═══════════════════════════
 
 def build_status_text(state):
-    frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
-    frame_labels = ["初始帧", "1/6帧", "1/3帧", "1/2帧", "2/3帧", "5/6帧"]
+    frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"]
+    frame_labels = ["初始帧", "1/10帧", "2/10帧", "3/10帧", "4/10帧", "5/10帧", "6/10帧", "7/10帧", "8/10帧", "9/10帧"]
     frame_indices = [int(state.get(f"{k}_frame_idx", 0)) for k in frame_keys]
     lang = state.get("language_instruction") or "(无)"
 
@@ -532,13 +528,13 @@ def build_status_text(state):
         lines.append(f"   当前物体视角: {cur_view}")
         mode_text = "正点 (+)" if int(state.get("current_click_label", 1)) == 1 else "负点 (-)"
         lines.append(f"   当前点击类型: {mode_text}")
-        active_key = state.get("active_prompt_key", "f3")
+        active_key = state.get("active_prompt_key", "f5")
         cur_points = state.get("current_points", {}).get(active_key, [])
         cur_labels = [p.get("label", 1) for p in cur_points]
         cur_pos = int(np.sum(np.array(cur_labels, dtype=np.int32) == 1)) if cur_labels else 0
         cur_neg = int(np.sum(np.array(cur_labels, dtype=np.int32) == 0)) if cur_labels else 0
         key_to_idx = {k: i for i, k in enumerate(frame_keys)}
-        ai = key_to_idx.get(active_key, 3)
+        ai = key_to_idx.get(active_key, 5)
         active_name, active_idx = frame_labels[ai], frame_indices[ai]
         lines.append(f"   当前标注帧: {active_name} ({active_idx + 1})")
         lines.append(f"   当前帧已点击: {len(cur_points)} 个点 (+{cur_pos} / -{cur_neg})")
@@ -658,15 +654,19 @@ def main():
             "preview_video_path":  None,     # 当前文件的临时预览视频
             "current_camera_view": "main",  # main | wrist
             "current_obj_name":    "",
-            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []},
+            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": [], "f6": [], "f7": [], "f8": [], "f9": []},
             "current_click_label": 1,        # 1=positive, 0=negative
             "f0_frame_idx":        0,        # 0
-            "f1_frame_idx":        0,        # 1/6
-            "f2_frame_idx":        0,        # 1/3
-            "f3_frame_idx":        0,        # 1/2
-            "f4_frame_idx":        0,        # 2/3
-            "f5_frame_idx":        0,        # 5/6
-            "active_prompt_key":   "f0",   # f0|f1|f2|f3|f4|f5
+            "f1_frame_idx":        0,        # 1/10
+            "f2_frame_idx":        0,        # 2/10
+            "f3_frame_idx":        0,        # 3/10
+            "f4_frame_idx":        0,        # 4/10
+            "f5_frame_idx":        0,        # 5/10
+            "f6_frame_idx":        0,        # 6/10
+            "f7_frame_idx":        0,        # 7/10
+            "f8_frame_idx":        0,        # 8/10
+            "f9_frame_idx":        0,        # 9/10
+            "active_prompt_key":   "f0",   # f0|f1|f2|f3|f4|f5|f6|f7|f8|f9
             "phase":               "idle",   # idle | naming | clicking | reviewing | processing | all_done
             "last_out_hdf5":       None,     # 上次处理输出的 hdf5 路径 (str)
             "last_out_video":      None,     # 上次处理输出的 mp4 路径 (str)
@@ -774,14 +774,18 @@ def main():
             "preview_video_path":  None,
             "current_camera_view": "main",
             "current_obj_name":    "",
-            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []},
+            "current_points":      {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": [], "f6": [], "f7": [], "f8": [], "f9": []},
             "current_click_label": 1,
             "f0_frame_idx":        0,
-            "f1_frame_idx":        (n // 6) if n else 0,
-            "f2_frame_idx":        (n // 3) if n else 0,
-            "f3_frame_idx":        (n // 2) if n else 0,
-            "f4_frame_idx":        ((2 * n) // 3) if n else 0,
-            "f5_frame_idx":        ((5 * n) // 6) if n else 0,
+            "f1_frame_idx":        (n // 10) if n else 0,
+            "f2_frame_idx":        ((2 * n) // 10) if n else 0,
+            "f3_frame_idx":        ((3 * n) // 10) if n else 0,
+            "f4_frame_idx":        ((4 * n) // 10) if n else 0,
+            "f5_frame_idx":        ((5 * n) // 10) if n else 0,
+            "f6_frame_idx":        ((6 * n) // 10) if n else 0,
+            "f7_frame_idx":        ((7 * n) // 10) if n else 0,
+            "f8_frame_idx":        ((8 * n) // 10) if n else 0,
+            "f9_frame_idx":        ((9 * n) // 10) if n else 0,
             "active_prompt_key":   "f0",
             "phase":               "naming" if frames else "idle",
         })
@@ -801,11 +805,15 @@ def main():
         f3 = int(state.get("f3_frame_idx", 0))
         f4 = int(state.get("f4_frame_idx", 0))
         f5 = int(state.get("f5_frame_idx", 0))
+        f6 = int(state.get("f6_frame_idx", 0))
+        f7 = int(state.get("f7_frame_idx", 0))
+        f8 = int(state.get("f8_frame_idx", 0))
+        f9 = int(state.get("f9_frame_idx", 0))
         return (
             f"📁 文件: {p.name}\n"
             f"📝 指令: {lang}\n"
             f"🎞️ 帧数: {n}\n"
-            f"🖼️ 标注帧: 0={f0 + 1}, 1/6={f1 + 1}, 1/3={f2 + 1}, 1/2={f3 + 1}, 2/3={f4 + 1}, 5/6={f5 + 1} / {max(n, 1)}\n"
+            f"🖼️ 标注帧: 0={f0 + 1}, 1/10={f1 + 1}, 2/10={f2 + 1}, 3/10={f3 + 1}, 4/10={f4 + 1}, 5/10={f5 + 1}, 6/10={f6 + 1}, 7/10={f7 + 1}, 8/10={f8 + 1}, 9/10={f9 + 1} / {max(n, 1)}\n"
             f"📊 进度: {idx + 1} / {len(pending)}"
         )
 
@@ -813,7 +821,7 @@ def main():
         frames = _get_frames(state)
         if not frames:
             return None
-        active_key = state.get("active_prompt_key", "f3")
+        active_key = state.get("active_prompt_key", "f5")
         prompt_idx = int(state.get(f"{active_key}_frame_idx", 0))
         prompt_idx = max(0, min(prompt_idx, len(frames) - 1))
 
@@ -844,7 +852,7 @@ def main():
         gr.Markdown(
             "# 🎯 SAM2 视频物体标注工具\n"
             "**标注流程**: ① 输入物体名称并回车确认 → "
-            "② 切换 6 个关键帧（0,1/6,1/3,1/2,2/3,5/6）并添加点（正/负） → "
+            "② 切换 10 个关键帧并添加点（正/负） → "
             "③ 点击「完成标注并处理当前物体」预览，可重标注；接受后继续下一个"
         )
 
@@ -854,7 +862,7 @@ def main():
             # ---- left column: image + video ----
             with gr.Column(scale=3):
                 image_out = gr.Image(
-                    label="标注帧（可切换 0、1/6、1/3、1/2、2/3、5/6）— 点击添加标注点",
+                    label="标注帧（可切换 0、1/10、2/10、3/10、4/10、5/10、6/10、7/10、8/10、9/10）— 点击添加标注点",
                     type="numpy",
                     interactive=False,
                     elem_id="sam2-annot-image",
@@ -885,7 +893,7 @@ def main():
                 )
 
                 frame_mode = gr.Radio(
-                    choices=["初始帧", "1/6帧", "1/3帧", "1/2帧", "2/3帧", "5/6帧"],
+                    choices=["初始帧", "1/10", "2/10", "3/10", "4/10", "5/10", "6/10", "7/10", "8/10", "9/10"],
                     value="初始帧",
                     label="当前标注帧",
                     interactive=True,
@@ -897,9 +905,6 @@ def main():
                     label="当前物体所属视角（仅影响SAM2输入）",
                     interactive=True,
                 )
-
-                gr.Markdown("- 点击说明：先选择标注帧与点类型，再用左键点击图片添加点")
-                gr.Markdown("- 名称确认：在“物体名称”输入后按回车，无需点击按钮")
 
                 with gr.Row():
                     btn_undo_pt  = gr.Button("↩️ 撤销上一个点", size="sm")
@@ -942,7 +947,7 @@ def main():
                 return state, gr.update(), "⚠️ 请输入物体名称！", gr.update(), gr.update()
             state["current_obj_name"] = name
             state["last_obj_name"] = name
-            state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
+            state["current_points"]   = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": [], "f6": [], "f7": [], "f8": [], "f9": []}
             state["current_click_label"] = 1
             state["draft_object"] = None
             state["draft_result"] = None
@@ -956,7 +961,7 @@ def main():
             )
 
         def _build_object_from_current_clicks(state):
-            frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5"]
+            frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"]
             obj = {
                 "name": state["current_obj_name"],
                 "camera_view": state.get("current_camera_view", "main"),
@@ -980,13 +985,17 @@ def main():
         def h_set_frame_mode(state, mode_text):
             mapping = {
                 "初始帧": "f0",
-                "1/6帧": "f1",
-                "1/3帧": "f2",
-                "1/2帧": "f3",
-                "2/3帧": "f4",
-                "5/6帧": "f5",
+                "1/10": "f1",
+                "2/10": "f2",
+                "3/10": "f3",
+                "4/10": "f4",
+                "5/10": "f5",
+                "6/10": "f6",
+                "7/10": "f7",
+                "8/10": "f8",
+                "9/10": "f9",
             }
-            state["active_prompt_key"] = mapping.get(mode_text, "f3")
+            state["active_prompt_key"] = mapping.get(mode_text, "f5")
             return state, get_display_image(state), build_status_text(state)
 
         def h_set_camera_mode(state, mode_text):
@@ -1000,7 +1009,7 @@ def main():
             # evt.index → [x, y] 是浏览器显示空间的坐标
             # 需要除以 scale 转换回原图像素坐标（用于 SAM2 推理）
             frames = _get_frames(state)
-            active_key = state.get("active_prompt_key", "f3")
+            active_key = state.get("active_prompt_key", "f5")
             prompt_idx = int(state.get(f"{active_key}_frame_idx", 0))
             prompt_idx = max(0, min(prompt_idx, len(frames) - 1))
             scale = compute_display_scale(frames[prompt_idx])
@@ -1019,7 +1028,7 @@ def main():
         def h_undo_point(state):
             """撤销最后一个标注点."""
             if state["phase"] == "clicking":
-                active_key = state.get("active_prompt_key", "f3")
+                active_key = state.get("active_prompt_key", "f5")
                 if state["current_points"].get(active_key):
                     state["current_points"][active_key].pop()
             return (
@@ -1053,7 +1062,7 @@ def main():
                 state["draft_object"] = _build_object_from_current_clicks(state)
                 state["draft_result"] = None
                 state["current_obj_name"] = ""
-                state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
+                state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": [], "f6": [], "f7": [], "f8": [], "f9": []}
 
             obj = state.get("draft_object")
             if obj is None:
@@ -1139,8 +1148,8 @@ def main():
 
             state["current_obj_name"] = obj.get("name", "")
             state["current_camera_view"] = obj.get("camera_view", "main")
-            state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": []}
-            for fk in ["f0", "f1", "f2", "f3", "f4", "f5"]:
+            state["current_points"] = {"f0": [], "f1": [], "f2": [], "f3": [], "f4": [], "f5": [], "f6": [], "f7": [], "f8": [], "f9": []}
+            for fk in ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"]:
                 fidx = int(state.get(f"{fk}_frame_idx", 0))
                 p = obj.get("prompts", {}).get(str(fidx))
                 if p:
@@ -1199,7 +1208,18 @@ def main():
             for o in objects:
                 prompts = o.get("prompts", {})
                 used = []
-                for fk, lb in [("f0", "0"), ("f1", "1/6"), ("f2", "1/3"), ("f3", "1/2"), ("f4", "2/3"), ("f5", "5/6")]:
+                for fk, lb in [
+                    ("f0", "0"),
+                    ("f1", "1/10"),
+                    ("f2", "2/10"),
+                    ("f3", "3/10"),
+                    ("f4", "4/10"),
+                    ("f5", "5/10"),
+                    ("f6", "6/10"),
+                    ("f7", "7/10"),
+                    ("f8", "8/10"),
+                    ("f9", "9/10"),
+                ]:
                     fidx = int(state.get(f"{fk}_frame_idx", 0))
                     labels = prompts.get(str(fidx), {}).get("labels", [])
                     if labels:
@@ -1351,7 +1371,7 @@ def main():
             [app_state, status_box],
         )
 
-        # switch annotation frame (0 / 1/6 / 1/3 / 1/2 / 2/3 / 5/6)
+        # switch annotation frame (0 / 1/10 / ... / 9/10)
         frame_mode.change(
             h_set_frame_mode, [app_state, frame_mode],
             [app_state, image_out, status_box],
