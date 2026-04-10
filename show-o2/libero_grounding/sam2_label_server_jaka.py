@@ -1,8 +1,8 @@
 """
-SAM2 Video Labeling Tool — Gradio Interactive Version
+SAM2 Video Labeling Tool — Gradio Interactive Version (JAKA 三视角版)
 
 Usage:
-    python sam2_label_server.py \
+    python sam2_label_server_jaka.py \
         --input_dir  /path/to/hdf5_folder \
         --output_dir /path/to/output \
         --model_cfg  configs/sam2.1/sam2.1_hiera_b+.yaml \
@@ -57,16 +57,27 @@ from sam2.build_sam import build_sam2_video_predictor
 def list_h5_files(folder: Path):
     files = list(folder.glob("*.hdf5")) + list(folder.glob("*.h5"))
 
-    def parse_name(p):
+    def extract_instruction_and_episode(p):
         stem = p.stem
-        if "_demo_" in stem:
-            instruction, demo = stem.rsplit("_demo_", 1)
-            demo_idx = int(demo)
+        if "_episode_" in stem:
+            instruction, episode = stem.rsplit("_episode_", 1)
+            episode_idx = int(episode)
         else:
-            instruction, demo_idx = stem, 0
-        return (instruction, demo_idx)
+            instruction, episode_idx = stem, 0
+        return instruction, episode_idx
+
+    def parse_name(p):
+        instruction, episode_idx = extract_instruction_and_episode(p)
+        return (instruction, episode_idx)
 
     return sorted(files, key=parse_name)
+
+
+def extract_instruction_from_filename(h5_path):
+    stem = Path(h5_path).stem
+    if "_episode_" in stem:
+        return stem.rsplit("_episode_", 1)[0]
+    return stem
 
 
 def decode_jpeg_object(obj):
@@ -93,6 +104,9 @@ def read_all_frames_from_h5(h5_path, frames_key="rgb_comb"):
             except Exception:
                 pass
 
+        if not language_instruction:
+            language_instruction = extract_instruction_from_filename(h5_path)
+
     return frames, language_instruction
 
 
@@ -111,23 +125,39 @@ def export_frames_to_jpg(frames_bgr, out_dir, quality=95):
 
 
 def mask_frames_by_camera_view(frames_bgr, camera_view):
-    """根据物体所属视角，对另一视角区域置黑（仅用于 SAM2 输入）。"""
+    """根据物体所属视角，对其他视角区域置黑（仅用于 SAM2 输入）。"""
     if not frames_bgr:
         return frames_bgr
 
     h = int(frames_bgr[0].shape[0])
-    split_h = 224 if h == 336 else int(round(h * (2.0 / 3.0)))
+    w = int(frames_bgr[0].shape[1])
+
+    if h == 336:
+        split_h = 224
+    else:
+        split_h = int(round(h * (2.0 / 3.0)))
     split_h = max(1, min(split_h, h - 1))
+
+    if w == 320:
+        split_w = 160
+    else:
+        split_w = int(round(w / 2.0))
+    split_w = max(1, min(split_w, w - 1))
 
     out = []
     for frm in frames_bgr:
         img = frm.copy()
         if camera_view == "main":
-            # 主视角物体：腕部视角(下半部分)置黑
+            # 主视角物体：下方两个腕部视角全部置黑
             img[split_h:, :, :] = 0
-        elif camera_view == "wrist":
-            # 腕部视角物体：主视角(上半部分)置黑
+        elif camera_view == "left_wrist":
+            # 左腕视角物体：主视角与右腕视角置黑
             img[:split_h, :, :] = 0
+            img[split_h:, split_w:, :] = 0
+        elif camera_view == "right_wrist":
+            # 右腕视角物体：主视角与左腕视角置黑
+            img[:split_h, :, :] = 0
+            img[split_h:, :split_w, :] = 0
         out.append(img)
     return out
 
@@ -489,6 +519,14 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
     return cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
 
 
+def camera_view_to_label(view_name):
+    return {
+        "main": "主视角",
+        "left_wrist": "左腕视角",
+        "right_wrist": "右腕视角",
+    }.get(view_name, view_name)
+
+
 # ═══════════════════════════ Status text builder ═══════════════════════════
 
 def build_status_text(state):
@@ -505,7 +543,7 @@ def build_status_text(state):
 
     lines = [f"📝 当前指令: {lang}", f"📌 已接受物体: {len(state['completed_objects'])}"]
     for i, o in enumerate(state["completed_objects"]):
-        view_txt = "主视角" if o.get("camera_view", "main") == "main" else "腕部视角"
+        view_txt = camera_view_to_label(o.get("camera_view", "main"))
         prompts = o.get("prompts", {})
         segs = []
         for k, lb, fidx in zip(frame_keys, frame_labels, frame_indices):
@@ -518,13 +556,13 @@ def build_status_text(state):
 
     draft_obj = state.get("draft_object")
     if draft_obj is not None:
-        draft_view = "主视角" if draft_obj.get("camera_view", "main") == "main" else "腕部视角"
+        draft_view = camera_view_to_label(draft_obj.get("camera_view", "main"))
         lines.append("\n🧪 待处理物体（可重标注）:")
         lines.append(f"  • {draft_obj.get('name', '(未命名)')} [{draft_view}]")
 
     if state["phase"] == "clicking":
         lines.append(f"\n🔵 正在标注: {state['current_obj_name']}")
-        cur_view = "主视角" if state.get("current_camera_view", "main") == "main" else "腕部视角"
+        cur_view = camera_view_to_label(state.get("current_camera_view", "main"))
         lines.append(f"   当前物体视角: {cur_view}")
         mode_text = "正点 (+)" if int(state.get("current_click_label", 1)) == 1 else "负点 (-)"
         lines.append(f"   当前点击类型: {mode_text}")
@@ -652,7 +690,7 @@ def main():
             "draft_object":        None,     # 当前待处理（可重标注）的物体
             "draft_result":        None,     # 当前待处理物体的 tracking 结果
             "preview_video_path":  None,     # 当前文件的临时预览视频
-            "current_camera_view": "main",  # main | wrist
+            "current_camera_view": "main",  # main | left_wrist | right_wrist
             "current_obj_name":    "",
             "current_points":      {
                 "f0": [], "f1": [], "f2": [], "f3": [], "f4": [],
@@ -746,7 +784,7 @@ def main():
         return base_fidx, agg_bbox, agg_area, agg_rle, agg_masks
 
     def _advance_to_next_unprocessed(state):
-        """从当前 file_idx 开始，跳过已有输出的文件（处理刷新后的恢复）."""
+        """从当前 file_idx 开始，跳过已有输出的文件（处理刷新后的恢复）。"""
         idx = state["file_idx"]
         while idx < len(pending):
             cur_file = pending[idx]
@@ -763,7 +801,7 @@ def main():
         state["file_idx"] = idx
 
     def load_current_file(state):
-        """加载当前 file_idx 对应的帧数据（帧存缓存，不存 state）."""
+        """加载当前 file_idx 对应的帧数据（帧存缓存，不存 state）。"""
         _advance_to_next_unprocessed(state)
         idx = state["file_idx"]
         if idx >= len(pending):
@@ -865,7 +903,8 @@ def main():
             "# 🎯 SAM2 视频物体标注工具\n"
             "**标注流程**: ① 输入物体名称并回车确认 → "
             "② 切换 15 个关键帧（初始帧到最终帧，含13个均匀中间帧）并添加点（正/负） → "
-            "③ 点击「完成标注并处理当前物体」预览，可重标注；接受后继续下一个"
+            "③ 点击「完成标注并处理当前物体」预览，可重标注；接受后继续下一个\n\n"
+            "**JAKA 三视角**: 主视角位于上方 224x320，左腕视角位于下方左侧 112x160，右腕视角位于下方右侧 112x160"
         )
 
         app_state = gr.State(make_state())
@@ -912,7 +951,7 @@ def main():
                 )
 
                 camera_mode = gr.Radio(
-                    choices=["主视角", "腕部视角"],
+                    choices=["主视角", "左腕视角", "右腕视角"],
                     value="主视角",
                     label="当前物体所属视角（仅影响SAM2输入）",
                     interactive=True,
@@ -1020,7 +1059,11 @@ def main():
             return state, get_display_image(state), build_status_text(state)
 
         def h_set_camera_mode(state, mode_text):
-            state["current_camera_view"] = "wrist" if mode_text == "腕部视角" else "main"
+            state["current_camera_view"] = {
+                "主视角": "main",
+                "左腕视角": "left_wrist",
+                "右腕视角": "right_wrist",
+            }.get(mode_text, "main")
             return state, build_status_text(state)
 
         def h_click(state, evt: gr.SelectData):
@@ -1107,7 +1150,7 @@ def main():
             camera_view = obj.get("camera_view", "main")
             masked_frames = mask_frames_by_camera_view(frames, camera_view)
 
-            view_text = "主视角" if camera_view == "main" else "腕部视角"
+            view_text = camera_view_to_label(camera_view)
             status_lines = [f"⏳ 正在处理当前物体: {obj.get('name', '(未命名)')} [{view_text}] …"]
             try:
                 with tempfile.TemporaryDirectory(prefix="sam2_frames_") as td:
@@ -1190,7 +1233,7 @@ def main():
             state["draft_object"] = None
             state["draft_result"] = None
             state["phase"] = "clicking"
-            camera_mode_value = "主视角" if state["current_camera_view"] == "main" else "腕部视角"
+            camera_mode_value = camera_view_to_label(state["current_camera_view"])
             return state, get_display_image(state), build_status_text(state), state.get("current_obj_name", ""), gr.update(), camera_mode_value
 
         def h_done(state):
