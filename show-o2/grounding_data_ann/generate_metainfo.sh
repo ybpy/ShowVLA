@@ -1,0 +1,6 @@
+python generate_metainfo.py \
+    --dataset_name "libero_90" \
+    --data_dirs "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_1_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_2_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_3_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_5_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_6_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_7_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_8_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_9_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_10_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_11_grounding" "/home/hyx/datasets/libero_90_regen_split_grounding/libero_90_regen_13_grounding" \
+    --language_instruction_key "language_instruction" \
+    --observation_key "rgb_comb" \
+    --output "./meta_libero/split/libero_90_grounding_metainfo_0412.json"
