@@ -29,6 +29,18 @@ BBOX_COLORS = {
     "red": (255, 0, 0),
     "green": (0, 128, 0),
     "blue": (0, 0, 255),
+    "yellow": (238, 230, 0),
+    "purple": (128, 0, 128),
+    "orange": (255, 140, 0),
+    "cyan": (0, 230, 230),
+    "magenta": (255, 0, 255),
+    "lime": (0, 255, 0),
+    "pink": (255, 20, 147),
+    "indigo": (75, 0, 130),
+    "gold": (245,191,35),
+    "olive": (128, 128, 0),
+    "violet": (148, 0, 211),
+    "khaki": (189, 183, 107),
 }
 
 MASK_COLORS = {
@@ -78,11 +90,11 @@ def try_get_img_with_bbox(img, instances, color):
         if h < 6:
             y1 = max(0, y1-3)
             y2 = min(img_h-1, y2+3)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 4)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
     
     return Image.fromarray(img)
 
-def get_img_with_segment_mask(img, h, w, instances, color, mask_color_weight=0.7):
+def get_img_with_segment_mask(img, h, w, instances, color, mask_color_weight=0.5):
     img = np.array(img)
     comb_mask = None
     for ann in instances:
@@ -92,10 +104,10 @@ def get_img_with_segment_mask(img, h, w, instances, color, mask_color_weight=0.7
         else:
             comb_mask = comb_mask | mask
 
-    colored_mask = np.zeros_like(img)
+    colored_mask = img.copy()
     colored_mask[comb_mask==1] = color
 
-    img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
+    img = cv2.addWeighted(img, (1.0 - mask_color_weight), colored_mask, mask_color_weight, 0)
     
     return Image.fromarray(img)
 
@@ -128,13 +140,13 @@ def annToMask(ann, h, w):
     return m
 
 
-def get_img_with_segment_mask_ade20k(img, segm, cat_id, mask_color_rgb, mask_color_weight=0.7):
+def get_img_with_segment_mask_ade20k(img, segm, cat_id, mask_color_rgb, mask_color_weight=0.5):
     img = np.array(img)
     segm = np.array(segm)
 
-    colored_mask = np.zeros_like(img)
+    colored_mask = img.copy()
     colored_mask[segm == cat_id] = mask_color_rgb
-    img = cv2.addWeighted(img, 1.0, colored_mask, mask_color_weight, 0)
+    img = cv2.addWeighted(img, (1.0 - mask_color_weight), colored_mask, mask_color_weight, 0)
     
     return Image.fromarray(img)
 

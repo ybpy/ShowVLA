@@ -41,7 +41,7 @@ class GroundingDataset(Dataset):
             image_size,
             num_image_tokens,
             prob_bbox: float = 0.5,
-            mask_color_weight: float = 0.7,
+            mask_color_weight: float = 0.5,
     ) -> None:
 
         if fileio.isdir(metas_path):
