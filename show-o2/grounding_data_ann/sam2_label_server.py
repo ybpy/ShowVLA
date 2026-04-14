@@ -513,6 +513,9 @@ def build_status_text(state):
             n, pp, nn = _count_prompt(p)
             if n > 0:
                 segs.append(f"{lb}({fidx + 1}): {n}点(+{pp}/-{nn})")
+        term_idx = o.get("terminate_frame_idx")
+        if term_idx is not None:
+            segs.append(f"终止帧: {int(term_idx) + 1}")
         seg_txt = " | ".join(segs) if segs else "无提示"
         lines.append(f"  {i + 1}. {o['name']} [{view_txt}]  {seg_txt}")
 
@@ -521,6 +524,9 @@ def build_status_text(state):
         draft_view = "主视角" if draft_obj.get("camera_view", "main") == "main" else "腕部视角"
         lines.append("\n🧪 待处理物体（可重标注）:")
         lines.append(f"  • {draft_obj.get('name', '(未命名)')} [{draft_view}]")
+        draft_term = draft_obj.get("terminate_frame_idx")
+        if draft_term is not None:
+            lines.append(f"    终止帧: {int(draft_term) + 1}")
 
     if state["phase"] == "clicking":
         lines.append(f"\n🔵 正在标注: {state['current_obj_name']}")
@@ -745,6 +751,31 @@ def main():
 
         return base_fidx, agg_bbox, agg_area, agg_rle, agg_masks
 
+    def _apply_terminate_frame_to_result(result, terminate_frame_idx):
+        """将终止帧之后的结果全部置空（bbox/area/rle/masks）。"""
+        t_idx = int(terminate_frame_idx)
+        frame_idx = np.array(result["frame_idx"], dtype=np.int32)
+        bbox = np.array(result["bbox"], dtype=np.float32, copy=True)
+        area = np.array(result["area"], dtype=np.int32, copy=True)
+        rle = np.array(result["rle"], dtype=object, copy=True)
+        masks = np.array(result["masks"], dtype=np.uint8, copy=True)
+
+        valid = frame_idx <= t_idx
+        invalid = ~valid
+        if np.any(invalid):
+            bbox[invalid, :, :] = 0.0
+            area[invalid, :] = 0
+            rle[invalid, :] = ""
+            masks[invalid, :, :, :] = 0
+
+        return {
+            "frame_idx": frame_idx,
+            "bbox": bbox,
+            "area": area,
+            "rle": rle,
+            "masks": masks,
+        }
+
     def _advance_to_next_unprocessed(state):
         """从当前 file_idx 开始，跳过已有输出的文件（处理刷新后的恢复）."""
         idx = state["file_idx"]
@@ -927,6 +958,9 @@ def main():
                 with gr.Row():
                     btn_accept_obj = gr.Button("✅ 接受该物体并继续下一个", variant="primary", size="sm")
                     btn_redo_obj   = gr.Button("🔄 重新标注该物体", size="sm")
+
+                with gr.Row():
+                    btn_set_terminate = gr.Button("🛑 选择终止帧（使用当前标注帧）", size="sm")
 
                 with gr.Row():
                     btn_done = gr.Button("🏁 完成文件并处理全部已接受物体", variant="stop")
@@ -1193,6 +1227,54 @@ def main():
             camera_mode_value = "主视角" if state["current_camera_view"] == "main" else "腕部视角"
             return state, get_display_image(state), build_status_text(state), state.get("current_obj_name", ""), gr.update(), camera_mode_value
 
+        def h_set_terminate_frame(state):
+            """按当前选中的标注帧设置终止帧，并刷新当前物体预览。"""
+            obj = state.get("draft_object")
+            res = state.get("draft_result")
+            if obj is None or res is None or state.get("phase") != "reviewing":
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 请先处理当前物体生成预览，再设置终止帧",
+                    gr.update(),
+                    gr.update(),
+                )
+
+            active_key = state.get("active_prompt_key", "f0")
+            terminate_idx = int(state.get(f"{active_key}_frame_idx", 0))
+
+            state["draft_result"] = _apply_terminate_frame_to_result(res, terminate_idx)
+            state["draft_object"]["terminate_frame_idx"] = int(terminate_idx)
+
+            idx = state["file_idx"]
+            h5_path = pending[idx]
+            frames = _get_frames(state)
+            preview_video = output_dir / (h5_path.stem + "_preview_current_obj.mp4")
+
+            status_lines = [f"🛑 已设置终止帧: 第 {terminate_idx + 1} 帧（其后帧不再输出该物体）"]
+            try:
+                render_grounding_video(
+                    str(preview_video),
+                    frames,
+                    state["draft_result"]["bbox"],
+                    state["draft_result"]["masks"],
+                    [obj.get("name", "obj1")],
+                    args.render_fps,
+                )
+                state["preview_video_path"] = str(preview_video)
+                status_lines.append("✅ 已刷新预览视频")
+            except Exception as e:
+                status_lines.append(f"❌ 刷新预览失败: {e}")
+                traceback.print_exc()
+
+            return (
+                state,
+                get_display_image(state),
+                "\n".join(status_lines) + "\n\n" + build_status_text(state),
+                file_info_text(state),
+                str(preview_video) if preview_video.exists() else None,
+            )
+
         def h_done(state):
             """完成文件：处理全部已接受物体并保存结果，然后加载下一个文件。"""
             # 若仍在点击阶段，不允许直接完成文件
@@ -1260,7 +1342,10 @@ def main():
                         p = int(np.sum(np.array(labels, dtype=np.int32) == 1))
                         n = int(np.sum(np.array(labels, dtype=np.int32) == 0))
                         used.append(f"{lb}帧 {len(labels)}点(+{p}/-{n})")
-                status_lines.append(f"   • {o['name']}: " + (", ".join(used) if used else "无提示"))
+                term_txt = ""
+                if o.get("terminate_frame_idx") is not None:
+                    term_txt = f"，终止帧={int(o['terminate_frame_idx']) + 1}"
+                status_lines.append(f"   • {o['name']}: " + (", ".join(used) if used else "无提示") + term_txt)
 
             print(f"\n===== Finalizing {h5_path.name}  ({len(objects)} objects) =====")
 
@@ -1444,6 +1529,12 @@ def main():
         btn_redo_obj.click(
             h_redo_obj, [app_state],
             [app_state, image_out, status_box, obj_name_in, frame_mode, camera_mode],
+        )
+
+        # set terminate frame for current reviewed object
+        btn_set_terminate.click(
+            h_set_terminate_frame, [app_state],
+            [app_state, image_out, status_box, info_box, video_out],
         )
 
         # finish current file → process all accepted objects
