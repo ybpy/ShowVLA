@@ -491,9 +491,28 @@ def draw_annotations_on_frame(frame_bgr, completed_objects,
 
 # ═══════════════════════════ Status text builder ═══════════════════════════
 
+FRAME_KEYS_15 = [
+    "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
+    "f10", "f11", "f12", "f13", "f14",
+]
+# 与界面单选「初始帧 / 1/14 … / 最终帧」一致；终止帧等短名 = 去掉末尾「帧」
+FRAME_LABELS_15 = [
+    "初始帧", "1/14帧", "2/14帧", "3/14帧", "4/14帧", "5/14帧", "6/14帧", "7/14帧", "8/14帧", "9/14帧",
+    "10/14帧", "11/14帧", "12/14帧", "13/14帧", "最终帧",
+]
+
+
+def annotate_slot_name_for_absolute_frame(state, abs_frame_idx):
+    t = int(abs_frame_idx)
+    for fk, lb in zip(FRAME_KEYS_15, FRAME_LABELS_15):
+        if int(state.get(f"{fk}_frame_idx", 0)) == t:
+            return lb[:-1]
+    return f"第{t + 1}帧"
+
+
 def build_status_text(state):
-    frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14"]
-    frame_labels = ["初始帧", "1/14帧", "2/14帧", "3/14帧", "4/14帧", "5/14帧", "6/14帧", "7/14帧", "8/14帧", "9/14帧", "10/14帧", "11/14帧", "12/14帧", "13/14帧", "最终帧"]
+    frame_keys = FRAME_KEYS_15
+    frame_labels = FRAME_LABELS_15
     frame_indices = [int(state.get(f"{k}_frame_idx", 0)) for k in frame_keys]
     lang = state.get("language_instruction") or "(无)"
 
@@ -515,7 +534,7 @@ def build_status_text(state):
                 segs.append(f"{lb}({fidx + 1}): {n}点(+{pp}/-{nn})")
         term_idx = o.get("terminate_frame_idx")
         if term_idx is not None:
-            segs.append(f"终止帧: {int(term_idx) + 1}")
+            segs.append(f"终止帧: {annotate_slot_name_for_absolute_frame(state, term_idx)}")
         seg_txt = " | ".join(segs) if segs else "无提示"
         lines.append(f"  {i + 1}. {o['name']} [{view_txt}]  {seg_txt}")
 
@@ -526,7 +545,7 @@ def build_status_text(state):
         lines.append(f"  • {draft_obj.get('name', '(未命名)')} [{draft_view}]")
         draft_term = draft_obj.get("terminate_frame_idx")
         if draft_term is not None:
-            lines.append(f"    终止帧: {int(draft_term) + 1}")
+            lines.append(f"    终止帧: {annotate_slot_name_for_absolute_frame(state, draft_term)}")
 
     if state["phase"] == "clicking":
         lines.append(f"\n🔵 正在标注: {state['current_obj_name']}")
@@ -856,7 +875,6 @@ def main():
             f"📁 文件: {p.name}\n"
             f"📝 指令: {lang}\n"
             f"🎞️ 帧数: {n}\n"
-            f"🖼️ 标注帧: {frame_text} / {max(n, 1)}\n"
             f"📊 进度: {idx + 1} / {len(pending)}"
         )
 
@@ -953,14 +971,17 @@ def main():
                     btn_undo_pt  = gr.Button("↩️ 撤销上一个点", size="sm")
 
                 with gr.Row():
-                    btn_process_obj = gr.Button("🚀 完成标注并处理当前物体", variant="stop")
+                    btn_process_obj = gr.Button("🚀 处理当前物体标注", variant="stop")
+
+                with gr.Row():
+                    btn_set_terminate = gr.Button("✂ 以当前选中帧作为终止帧，其后帧不框出该物体", size="sm")
 
                 with gr.Row():
                     btn_accept_obj = gr.Button("✅ 接受该物体并继续下一个", variant="primary", size="sm")
                     btn_redo_obj   = gr.Button("🔄 重新标注该物体", size="sm")
 
                 with gr.Row():
-                    btn_set_terminate = gr.Button("🛑 选择终止帧（使用当前标注帧）", size="sm")
+                    btn_undo_accept = gr.Button("↩️ 撤销上一个物体", size="sm")
 
                 with gr.Row():
                     btn_done = gr.Button("🏁 完成文件并处理全部已接受物体", variant="stop")
@@ -1199,6 +1220,76 @@ def main():
             state["phase"] = "naming"
             return state, get_display_image(state), build_status_text(state), state.get("last_obj_name", "")
 
+        def h_undo_last_accepted(state):
+            """撤销最近一次「接受该物体」：从已接受列表移除并恢复为待预览（可重标/再接受）。"""
+            if state.get("phase") == "all_done":
+                return (
+                    state, gr.update(),
+                    "⚠️ 所有文件已处理完毕",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("phase") == "processing":
+                return (
+                    state, gr.update(),
+                    "⚠️ 正在处理文件中，请稍候",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("draft_object") is not None:
+                return (
+                    state, gr.update(),
+                    "⚠️ 当前有待预览物体。请先接受或「重新标注该物体」后再撤销已接受物体。",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("phase") == "clicking":
+                total_points = sum(len(v) for v in state.get("current_points", {}).values())
+                if total_points > 0 or (state.get("current_obj_name") or "").strip():
+                    return (
+                        state, gr.update(),
+                        "⚠️ 当前正在标注新物体。请先处理/清空当前标注后再撤销已接受物体。",
+                        gr.update(), gr.update(), gr.update(),
+                    )
+            if not state.get("completed_objects"):
+                return (
+                    state, gr.update(),
+                    "⚠️ 没有可撤销的已接受物体",
+                    gr.update(), gr.update(), gr.update(),
+                )
+
+            obj = state["completed_objects"].pop()
+            result = state["completed_results"].pop()
+            state["draft_object"] = obj
+            state["draft_result"] = result
+            state["phase"] = "reviewing"
+
+            idx = state["file_idx"]
+            h5_path = pending[idx]
+            frames = _get_frames(state)
+            preview_video = output_dir / (h5_path.stem + "_preview_current_obj.mp4")
+            status_lines = [f"↩️ 已撤销接受「{obj.get('name', '(未命名)')}」，已恢复为待预览。"]
+            try:
+                render_grounding_video(
+                    str(preview_video),
+                    frames,
+                    result["bbox"],
+                    result["masks"],
+                    [obj.get("name", "obj1")],
+                    args.render_fps,
+                )
+                state["preview_video_path"] = str(preview_video)
+                status_lines.append("✅ 已刷新预览视频")
+            except Exception as e:
+                status_lines.append(f"❌ 刷新预览失败: {e}")
+                traceback.print_exc()
+
+            return (
+                state,
+                get_display_image(state),
+                "\n".join(status_lines) + "\n\n" + build_status_text(state),
+                file_info_text(state),
+                str(preview_video) if preview_video.exists() else None,
+                obj.get("name", "") or state.get("last_obj_name", ""),
+            )
+
         def h_redo_obj(state):
             """将 draft 物体恢复为可编辑，重新标注后再处理。"""
             obj = state.get("draft_object")
@@ -1251,7 +1342,8 @@ def main():
             frames = _get_frames(state)
             preview_video = output_dir / (h5_path.stem + "_preview_current_obj.mp4")
 
-            status_lines = [f"🛑 已设置终止帧: 第 {terminate_idx + 1} 帧（其后帧不再输出该物体）"]
+            slot_nm = annotate_slot_name_for_absolute_frame(state, terminate_idx)
+            status_lines = [f"🛑 已设置终止帧: {slot_nm}（其后帧不框出该物体）"]
             try:
                 render_grounding_video(
                     str(preview_video),
@@ -1344,7 +1436,9 @@ def main():
                         used.append(f"{lb}帧 {len(labels)}点(+{p}/-{n})")
                 term_txt = ""
                 if o.get("terminate_frame_idx") is not None:
-                    term_txt = f"，终止帧={int(o['terminate_frame_idx']) + 1}"
+                    term_txt = (
+                        f"，终止帧={annotate_slot_name_for_absolute_frame(state, int(o['terminate_frame_idx']))}"
+                    )
                 status_lines.append(f"   • {o['name']}: " + (", ".join(used) if used else "无提示") + term_txt)
 
             print(f"\n===== Finalizing {h5_path.name}  ({len(objects)} objects) =====")
@@ -1523,6 +1617,12 @@ def main():
         btn_accept_obj.click(
             h_accept_obj, [app_state],
             [app_state, image_out, status_box, obj_name_in],
+        )
+
+        # undo last accepted object (restore as draft for review)
+        btn_undo_accept.click(
+            h_undo_last_accepted, [app_state],
+            [app_state, image_out, status_box, info_box, video_out, obj_name_in],
         )
 
         # redo current draft object
