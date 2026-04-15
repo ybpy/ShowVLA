@@ -923,7 +923,7 @@ def main():
             # ---- left column: image + video ----
             with gr.Column(scale=3):
                 image_out = gr.Image(
-                    label="标注帧（可切换 初始帧、1/14…13/14、最终帧）— 点击添加标注点",
+                    label="标注帧（可切换关键帧）— 左键正点 / 右键负点",
                     type="numpy",
                     interactive=False,
                     elem_id="sam2-annot-image",
@@ -937,7 +937,7 @@ def main():
                 )
                 status_box = gr.Textbox(
                     label="📋 标注状态", interactive=False, lines=8,
-                    value="正在加载 …\n提示：先在名称框输入并按回车确认，再选点类型并左键点击添加",
+                    value="正在加载 …\n提示：名称回车确认后，左键=正点、右键=负点",
                 )
 
                 obj_name_in = gr.Textbox(
@@ -946,12 +946,8 @@ def main():
                     interactive=True,
                 )
 
-                click_mode = gr.Radio(
-                    choices=["正点 (+)", "负点 (-)"],
-                    value="正点 (+)",
-                    label="当前点击类型",
-                    interactive=True,
-                )
+                # 由前端 JS 在每次图像 select 前写入 1=正点 0=负点，供 h_click 读取（中键等回退用上次值）
+                click_label_code = gr.Number(value=1, visible=False)
 
                 frame_mode = gr.Radio(
                     choices=["初始帧", "1/14", "2/14", "3/14", "4/14", "5/14", "6/14", "7/14", "8/14", "9/14", "10/14", "11/14", "12/14", "13/14", "最终帧"],
@@ -1000,7 +996,6 @@ def main():
                 build_status_text(state),
                 None,   # video_out
                 state.get("last_obj_name", ""),
-                "正点 (+)",
                 "初始帧",
                 "主视角",
             )
@@ -1049,10 +1044,6 @@ def main():
                 }
             return obj
 
-        def h_set_click_mode(state, mode_text):
-            state["current_click_label"] = 0 if mode_text == "负点 (-)" else 1
-            return state, build_status_text(state)
-
         def h_set_frame_mode(state, mode_text):
             mapping = {
                 "初始帧": "f0",
@@ -1078,10 +1069,14 @@ def main():
             state["current_camera_view"] = "wrist" if mode_text == "腕部视角" else "main"
             return state, build_status_text(state)
 
-        def h_click(state, evt: gr.SelectData):
-            """用户在图片上点击 → 添加一个标注点."""
+        def h_click(state, label_code: float, evt: gr.SelectData):
+            """用户在图片上点击 → 添加一个标注点（左键正点 / 右键负点，见前端 JS）."""
             if state["phase"] != "clicking":
-                return state, gr.update(), "⚠️ 请先输入并确认物体名称"
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 请先输入并确认物体名称",
+                )
             # evt.index → [x, y] 是浏览器显示空间的坐标
             # 需要除以 scale 转换回原图像素坐标（用于 SAM2 推理）
             frames = _get_frames(state)
@@ -1091,7 +1086,11 @@ def main():
             scale = compute_display_scale(frames[prompt_idx])
             x_orig = float(evt.index[0]) / scale
             y_orig = float(evt.index[1]) / scale
-            lb = int(state.get("current_click_label", 1))
+            try:
+                lb = int(round(float(label_code))) & 1
+            except (TypeError, ValueError):
+                lb = int(state.get("current_click_label", 1))
+            state["current_click_label"] = lb
             state["current_points"].setdefault(active_key, []).append(
                 {"xy": [x_orig, y_orig], "label": int(lb)}
             )
@@ -1564,24 +1563,39 @@ def main():
         # page load
         demo.load(
             h_load, [app_state],
-            [app_state, image_out, info_box, status_box, video_out, obj_name_in, click_mode, frame_mode, camera_mode],
+            [app_state, image_out, info_box, status_box, video_out, obj_name_in, frame_mode, camera_mode],
             js="""
             (s) => {
-                // 禁用标注图像上的浏览器右键菜单，避免干扰右键打负点
                 setTimeout(() => {
                     const root = document.getElementById('sam2-annot-image');
                     if (!root) return;
-                    root.addEventListener('contextmenu', (e) => e.preventDefault());
+                    // 记录最近一次按键：0=左键 2=右键（与浏览器 MouseEvent.button 一致）
+                    root.addEventListener('pointerdown', (e) => {
+                        window.__sam2_last_btn = e.button;
+                    }, true);
+                    // 浏览器对右键不触发 Image 的 click/select，因此在右键菜单阶段合成一次 click
+                    root.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        const img = root.querySelector('img');
+                        if (!img) return;
+                        const t = e.target;
+                        const onFrame = t === img || (img.contains && img.contains(t))
+                            || (t && t.closest && t.closest('.image-frame'));
+                        if (!onFrame) return;
+                        const btnEl = img.closest('button');
+                        if (!btnEl) return;
+                        btnEl.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: e.clientX,
+                            clientY: e.clientY,
+                            view: window
+                        }));
+                    });
                 }, 300);
                 return [s];
             }
             """,
-        )
-
-        # switch click mode (positive / negative)
-        click_mode.change(
-            h_set_click_mode, [app_state, click_mode],
-            [app_state, status_box],
         )
 
         # switch annotation frame (0 / 1/10 / ... / 9/10)
@@ -1601,8 +1615,22 @@ def main():
             [app_state, image_out, status_box, obj_name_in, frame_mode],
         )
 
-        # click on image → add point
-        image_out.select(h_click, [app_state], outs_3)
+        # click on image → add point（前端 JS 根据左/右键写入 click_label_code）
+        image_out.select(
+            h_click,
+            [app_state, click_label_code],
+            outs_3,
+            js="""
+            async (state, label_code) => {
+                const b = (typeof window.__sam2_last_btn === 'number') ? window.__sam2_last_btn : 0;
+                let lb;
+                if (b === 2) lb = 0;
+                else if (b === 0) lb = 1;
+                else lb = Math.round(Number(label_code)) & 1;
+                return [state, lb];
+            }
+            """,
+        )
 
         # undo point
         btn_undo_pt.click(h_undo_point,  [app_state], outs_3)
