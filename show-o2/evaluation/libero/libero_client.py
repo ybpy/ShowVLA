@@ -328,7 +328,9 @@ class LIBEROEval:
             obs['robo_ori'] = robo_ori
             obs['robo_pos'] = robo_pos
 
-            action = policy.step(obs, lang)
+            lang_ = lang
+            lang_ = lang_.replace('black bowl', 'bowl')
+            action = policy.step(obs, lang_)
 
             images.append(_flip_agentview(obs['agentview_image']))
             obs, reward, done, info = env.step(action)

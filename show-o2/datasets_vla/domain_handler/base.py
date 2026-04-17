@@ -279,6 +279,9 @@ class BaseHDF5Handler(DomainHandler):
             images = self.get_image_datasets(f)
             # Language
             ins = self.read_instruction(f)
+            if 'libero' in self.meta["dataset_name"]:
+                ins = ins.replace('black bowl', 'bowl')
+
             # Domain-specific kinematics and timing
             left, right, lt, rt, freq, qdur_max, qdur_min = self.build_left_right(f)
         
