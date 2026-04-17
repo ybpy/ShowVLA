@@ -90,7 +90,7 @@ def try_get_img_with_bbox(img, instances, color):
         if h < 6:
             y1 = max(0, y1-3)
             y2 = min(img_h-1, y2+3)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
     
     return Image.fromarray(img)
 
