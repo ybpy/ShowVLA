@@ -1,6 +1,8 @@
 import json
 import os
 import h5py
+import io
+from mmengine import fileio
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, IterableDataset
@@ -43,9 +45,9 @@ class RobotGroundingDataset(IterableDataset):
             
         self.datalist = []
         for path in meta_paths:
-            with open(path, 'r') as f:
-                meta = json.load(f)
-                self.datalist.extend(meta['datalist'])
+            with io.BytesIO(fileio.get(path)) as f: meta = json.load(f)
+            print(f"== [{path}] with {len(meta['datalist'])} trajs", flush=True)
+            self.datalist.extend(meta['datalist'])
         
         self.vis_mode = vis_mode
         self.mask_color_weight = mask_color_weight
@@ -73,6 +75,15 @@ class RobotGroundingDataset(IterableDataset):
         # 统一使用来自 utils.py 的 MASK_COLORS
         self.colors_rgb = list(MASK_COLORS.values())
         self.color_names = list(MASK_COLORS.keys())
+
+        self.epoch = 0
+        self.num_processes = 1
+        self.process_index = 0
+
+    def set_epoch(self, epoch: int, num_processes: int = 1, process_index: int = 0):
+        self.epoch = epoch
+        self.num_processes = num_processes
+        self.process_index = process_index
 
     def format_img_text_tgt_img_seq(self, text: str):
         text_tokens = []
@@ -125,20 +136,18 @@ class RobotGroundingDataset(IterableDataset):
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            # single-process data loading, return the full iterator
-            iter_start = 0
-            iter_end = len(self.datalist)
-        else:
-            # in a worker process
-            # split workload
-            per_worker = int(np.ceil(len(self.datalist) / float(worker_info.num_workers)))
-            worker_id = worker_info.id
-            iter_start = worker_id * per_worker
-            iter_end = min(iter_start + per_worker, len(self.datalist))
+        num_workers = worker_info.num_workers if worker_info else 1
+        worker_id = worker_info.id if worker_info else 0
+        
+        # 1. 计算全局唯一的总并行度和当前 worker 的全局唯一 ID
+        total_parallel_size = self.num_processes * num_workers
+        global_worker_id = self.process_index * num_workers + worker_id
 
-        # Shuffle datalist for each epoch if needed, but here we just iterate
-        indices = list(range(iter_start, iter_end))
+        # 2. 使用步长取模进行分片，确保数据在所有进程和 worker 之间均匀分布且不重复
+        indices = [i for i in range(len(self.datalist)) if i % total_parallel_size == global_worker_id]
+        
+        # 3. 使用 epoch 和 global_worker_id 设置随机种子，确保每个 epoch 的 shuffle 不同
+        random.seed(self.epoch + global_worker_id)
         random.shuffle(indices)
 
         for idx in indices:
@@ -207,11 +216,12 @@ class RobotGroundingDataset(IterableDataset):
             current_vis_mode = "combine"
             task_mode = "combine"
 
-        # Generate visualized image
-        vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb, object_names)
-        if vis_img is None:
+        filtered = self._filter_grounding_to_frame(bbox_xywh, rle_data, object_names)
+        if filtered is None:
             return None
-        
+        bbox_xywh, rle_data, object_names = filtered
+
+        vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb, object_names)
         # Generate instruction
         object_names_unique = list(set(object_names))
         obj_str = ", ".join(object_names_unique)
@@ -223,10 +233,7 @@ class RobotGroundingDataset(IterableDataset):
             text = f"Mark with {color_name} bounding box and segment mask for {obj_str} in the image:"
 
         # Tokenization and sequence formatting
-        seq = self.format_img_text_tgt_img_seq(text)
-        if seq is None:
-            return None
-        text_tokens, text_labels, modality_positions, text_mask, image_mask = seq
+        text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_img_text_tgt_img_seq(text)
 
         # Image transformation
         img_pil = Image.fromarray(img_rgb)
@@ -246,31 +253,51 @@ class RobotGroundingDataset(IterableDataset):
             'image_masks': image_mask,
         }
 
+    def _filter_grounding_to_frame(
+        self,
+        bbox_xywh: np.ndarray,
+        rle_data,
+        object_names: List[str],
+    ) -> Optional[Tuple[np.ndarray, List[Any], List[str]]]:
+        """
+        Keep only objects with a positive-size bbox on this frame (has_bbox only).
+        """
+        if bbox_xywh is None or len(bbox_xywh) == 0:
+            return None
+        assert len(object_names) == len(bbox_xywh) == len(rle_data)
+        n = len(bbox_xywh)
+        keep: List[int] = []
+        for i in range(n):
+            x, y, bw, bh = bbox_xywh[i].astype(np.int32)
+            has_bbox = bw > 0 and bh > 0
+            if has_bbox:
+                keep.append(i)
+        if not keep:
+            return None
+        keep_idx = np.array(keep, dtype=np.int64)
+        bbox_out = np.asarray(bbox_xywh[keep_idx], dtype=bbox_xywh.dtype)
+        rle_out = [rle_data[i] for i in keep]
+        names_out = [object_names[i] for i in keep]
+        return bbox_out, rle_out, names_out
+
     def _get_visualized_image(self, img_rgb, bbox_xywh, rle_list, mode, color_rgb, object_names=None):
         img = img_rgb.copy()
         
         # Determine what to draw based on mode
         draw_bbox = mode in ["bbox", "combine"]
         draw_mask = mode in ["segment_mask", "combine"]
-        
-        objects_found = False
-        for i, bbox in enumerate(bbox_xywh):
-            x, y, bw, bh = bbox.astype(np.int32)
-            if bw > 0 and bh > 0:
-                objects_found = True
-                if draw_bbox:
-                    # Draw bbox
-                    cv2.rectangle(img, (x, y), (x + bw, y + bh), color_rgb, 3)
-        
-        if not objects_found:
-            return None # No objects found, skip this sample
+
+        if draw_bbox:
+            for bbox in bbox_xywh:
+                x, y, bw, bh = bbox.astype(np.int32)
+                assert bw > 0 and bh > 0
+                cv2.rectangle(img, (x, y), (x + bw, y + bh), color_rgb, 2)
 
         if draw_mask:
             # Draw masks
             mask_overlay = img.copy()
             for i, rle_str in enumerate(rle_list):
-                if not rle_str:
-                    continue
+                assert rle_str
 
                 if isinstance(rle_str, bytes):
                     rle_str = rle_str.decode("utf-8")
@@ -308,10 +335,12 @@ if __name__ == '__main__':
         llm_name="qwen2_5"
     )
 
-    meta_path = "/home/hyx/ShowVLA/show-o2/grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json"
+    meta_paths = [
+        "/home/hyx/ShowVLA/show-o2/grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0417.json"
+    ]
     
     dataset = RobotGroundingDataset(
-        meta_paths=[meta_path],
+        meta_paths=meta_paths,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         max_seq_len=872,
@@ -321,7 +350,17 @@ if __name__ == '__main__':
         num_samples_per_video=4,
     )
     
-    train_dataloader = DataLoader(dataset, batch_size=8, shuffle=False, num_workers=4, collate_fn=dataset.collate_fn)
+    # IterableDataset does not support Sampler or shuffle
+    train_dataloader = DataLoader(
+        dataset,
+        batch_size=8,
+        collate_fn=dataset.collate_fn,
+        num_workers=4,
+        shuffle=False,
+        drop_last=True,
+        pin_memory=True,
+        persistent_workers=True
+    )
 
     def to_numpy_img(tensor):
         img = tensor.permute(1, 2, 0).numpy()
