@@ -22,6 +22,7 @@ from .dataset import InfiniteDataReader
 from .vqa_dataset import VQADataset
 from .eo_dataset import EO_VQADataset
 from .grounding_dataset import GroundingDataset
+from .robot_grounding_dataset import RobotGroundingDataset
 from .video_dataset import create_video_dataset_loader
 from .mixed_dataloader import MixedDataLoader
 
@@ -57,6 +58,7 @@ def create_dataloader(
     pred_act: bool = False,
     random_query_duration: bool = False,
     num_future_imgs: int = 1,
+    given_freq=None,
 ):
 
     return DataLoader(
@@ -64,7 +66,7 @@ def create_dataloader(
             text_tokenizer=text_tokenizer, showo_token_ids=showo_token_ids, max_seq_len=max_seq_len,
             image_size=image_size, num_image_tokens=num_image_tokens,
             pred_act=pred_act,
-            random_query_duration=random_query_duration, num_future_imgs=num_future_imgs),
+            random_query_duration=random_query_duration, num_future_imgs=num_future_imgs, given_freq=given_freq),
         batch_size=batch_size,
         collate_fn=collate_fn,
         num_workers=num_workers,

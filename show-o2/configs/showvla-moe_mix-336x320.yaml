@@ -199,6 +199,7 @@ xvla:
     action_mode: ee6d
     random_query_duration: False
     num_future_imgs: 1
+    given_freq: 30.0
 
 training:
     use_lora: False
@@ -212,13 +213,13 @@ training:
         - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
     batch_size_robot_grounding: 2
     robot_grounding_vis_mode: combine
-    robot_grounding_num_samples_per_video: 8
+    robot_grounding_num_samples_per_video: 4
     video_metas_paths: null
         # - ../../datasets/Something-Something-V2/labels/train.json
         # - ../../datasets/Something-Something-V2/labels/validation.json
     batch_size_video: 0
     train_metas_path: ./meta_libero_data/split_all
-    batch_size_vla: 4
+    batch_size_vla: 8
     action_coeff: 1.0
 
     gradient_accumulation_steps: 2
