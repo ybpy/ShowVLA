@@ -44,7 +44,7 @@ except ImportError:
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from models import Showo2Qwen2_5, omni_attn_mask_naive
 from models.lr_schedulers import get_scheduler
@@ -56,7 +56,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets_vla import GroundingDataset, MixedDataLoader
+from datasets_vla import GroundingDataset, MixedDataLoader, RobotGroundingDataset
 from datasets_vla import create_dataloader, create_video_dataset_loader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
@@ -88,7 +88,7 @@ def main():
         split_batches=True,
     )
 
-    bs_grounding = config.training.batch_size_grounding
+    bs_grounding = config.training.get('batch_size_grounding', 0) + config.training.get('batch_size_robot_grounding', 0)
     bs_video = config.training.batch_size_video
     bs_vla = config.training.batch_size_vla
 
@@ -481,27 +481,38 @@ def main():
     loader_list = [xvla_loader]
 
     def create_grounding_dataloader(dataset, batch_size, collate_fn):
-        if accelerator.num_processes > 1:
-            sampler = DistributedSampler(dataset,
-                                         num_replicas=accelerator.num_processes,
-                                         rank=accelerator.process_index,
-                                         shuffle=True,
-                                         drop_last=True,
-                                         )
-            shuffle = False
+        if isinstance(dataset, IterableDataset):
+            # IterableDataset does not support Sampler or shuffle
+            dataloader = DataLoader(dataset, batch_size=batch_size,
+                                    collate_fn=collate_fn,
+                                    num_workers=dataset_config.num_workers,
+                                    shuffle=False,
+                                    drop_last=True,
+                                    pin_memory=True,
+                                    persistent_workers=True)
         else:
-            sampler = None
-            shuffle = True
+            if accelerator.num_processes > 1:
+                sampler = DistributedSampler(dataset,
+                                             num_replicas=accelerator.num_processes,
+                                             rank=accelerator.process_index,
+                                             shuffle=True,
+                                             drop_last=True,
+                                             )
+                shuffle = False
+            else:
+                sampler = None
+                shuffle = True
 
-        dataloader = DataLoader(dataset, batch_size=batch_size,
-                                        sampler=sampler, collate_fn=collate_fn,
-                                        shuffle=shuffle, num_workers=dataset_config.num_workers,
-                                        drop_last=True,
-                                        pin_memory=True,
-                                        persistent_workers=True)
+            dataloader = DataLoader(dataset, batch_size=batch_size,
+                                            sampler=sampler, collate_fn=collate_fn,
+                                            shuffle=shuffle, num_workers=dataset_config.num_workers,
+                                            drop_last=True,
+                                            pin_memory=True,
+                                            persistent_workers=True)
         return dataloader
 
     iti_iter = None
+    iti_robot_iter = None
     if config.training.grounding_metas_path:
         dataset = GroundingDataset(
             metas_path=config.training.grounding_metas_path,
@@ -516,6 +527,26 @@ def main():
                                                         dataset.collate_fn)
         # loader_list.append(train_dataloader_grounding)
         iti_iter = iter(train_dataloader_grounding)
+
+    if config.training.get('robot_grounding_metas_path', None):
+        robot_dataset = RobotGroundingDataset(
+            meta_paths=config.training.robot_grounding_metas_path,
+            text_tokenizer=text_tokenizer,
+            showo_token_ids=showo_token_ids,
+            max_seq_len=preproc_config.max_vla_seq_len,
+            image_size=preproc_config.vla_image_size,
+            num_image_tokens=preproc_config.num_vla_image_tokens,
+            vis_mode=config.training.get('robot_grounding_vis_mode', 'combine'),
+            num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
+        )
+        # 为 IterableDataset 设置分布式信息
+        if hasattr(robot_dataset, 'set_epoch'):
+            robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
+            
+        train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
+                                                                config.training.batch_size_robot_grounding,
+                                                                robot_dataset.collate_fn)
+        iti_robot_iter = iter(train_dataloader_robot_grounding)
 
     if config.training.video_metas_paths:
         # Dataloader for Video Dataset (e.g., Something-Something-V2)
@@ -751,12 +782,25 @@ def main():
 
     model.train()
     for batch in mixed_loader:
-        if iti_iter:
+        grounding_batches = []
+        if iti_iter is not None:
             try:
                 iti_batch = next(iti_iter)
             except StopIteration:
                 iti_iter = iter(train_dataloader_grounding)
                 iti_batch = next(iti_iter)
+            grounding_batches.append(iti_batch)
+        
+        if iti_robot_iter is not None:
+            try:
+                iti_robot_batch = next(iti_robot_iter)
+            except StopIteration:
+                # 在重新迭代时更新随机种子
+                if hasattr(iti_robot_iter._dataset, 'set_epoch'):
+                    iti_robot_iter._dataset.set_epoch(global_step + 1, accelerator.num_processes, accelerator.process_index)
+                iti_robot_iter = iter(train_dataloader_robot_grounding)
+                iti_robot_batch = next(iti_robot_iter)
+            grounding_batches.append(iti_robot_batch)
         
         with accelerator.accumulate(model):
             # print(f"batch['language_instruction']: {batch['language_instruction']}")
@@ -787,23 +831,24 @@ def main():
             else:
                 raise NotImplementedError
 
-            if iti_iter:
-                iti_text_tokens = iti_batch['text_tokens'].to(accelerator.device)
-                iti_pixel_values = iti_batch['images'].to(accelerator.device).to(weight_type)
+            if len(grounding_batches) > 0:
+                g_text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in grounding_batches], dim=0)
+                g_pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in grounding_batches], dim=0)
+                g_image_masks = torch.cat([gb['image_masks'].to(accelerator.device) for gb in grounding_batches], dim=0)
+                g_modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in grounding_batches], dim=0)
 
-                iti_image_masks = iti_batch['image_masks'].to(accelerator.device)
-                iti_modality_positions = iti_batch['modality_positions'].to(accelerator.device)
-                iti_image_latents, iti_t, iti_image_labels, iti_image_masks = prepare_latents_and_labels(
-                                                                                            iti_pixel_values,
-                                                                                            iti_image_masks,
-                                                                                            iti_modality_positions)
-                
-                text_tokens = torch.cat([text_tokens, iti_text_tokens], dim=0)
-                modality_positions = torch.cat([modality_positions, iti_modality_positions], dim=0)
-                image_latents = torch.cat([image_latents, iti_image_latents], dim=0)
-                t = torch.cat([t, iti_t], dim=0)
-                image_masks = torch.cat([image_masks, iti_image_masks], dim=0)
-                image_labels = torch.cat([image_labels, iti_image_labels], dim=0)
+                g_image_latents, g_t, g_image_labels, g_image_masks = prepare_latents_and_labels(
+                    g_pixel_values,
+                    g_image_masks,
+                    g_modality_positions
+                )
+
+                text_tokens = torch.cat([text_tokens, g_text_tokens], dim=0)
+                modality_positions = torch.cat([modality_positions, g_modality_positions], dim=0)
+                image_latents = torch.cat([image_latents, g_image_latents], dim=0)
+                t = torch.cat([t, g_t], dim=0)
+                image_masks = torch.cat([image_masks, g_image_masks], dim=0)
+                image_labels = torch.cat([image_labels, g_image_labels], dim=0)
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),

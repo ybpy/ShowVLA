@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_itf"
-    output_dir: "showvla-mix_weighted_itf"
+    name: "showvla-mix_weighted_grounding0412"
+    output_dir: "showvla-mix_weighted_grounding0412"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -48,7 +48,7 @@ model:
         # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding' ]
         frozen_params: null
         params_not_load: null
-        use_img_trans_field: True
+        use_img_trans_field: False
         pred_act: False 
         xvla_hidden_size: null
         xvla_depth: 1
@@ -98,7 +98,7 @@ model:
             use_sliding_window: False
             vocab_size: 151936
             decoder_sparse_step: 1
-            moe_intermediate_size: 3072
+            moe_intermediate_size: 3584
             shared_expert_intermediate_size: 5632
             num_experts_per_tok: 2
             num_experts: 4
@@ -162,7 +162,7 @@ optimizer:
         learning_rate_ve: 0.00004
         learning_rate_proj: 0.00008
         learning_rate_showo: 0.00008
-        learning_rate_showo_expert: 0.0002
+        learning_rate_showo_expert: 0.00012
         learning_rate_act: 0.0001
         learning_rate_soft_prompt: 0.000015
         learning_rate_project_xvla: 0.0004
@@ -197,6 +197,8 @@ transport:
 xvla:
     num_actions: 30
     action_mode: ee6d
+    random_query_duration: False
+    num_future_imgs: 1
 
 training:
     use_lora: False
@@ -205,7 +207,12 @@ training:
     compile_mode: "default"
 
     grounding_metas_path: ./meta_grounding_data
-    batch_size_grounding: 4
+    batch_size_grounding: 6
+    robot_grounding_metas_path: 
+        - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
+    batch_size_robot_grounding: 2
+    robot_grounding_vis_mode: combine
+    robot_grounding_num_samples_per_video: 8
     video_metas_paths: null
         # - ../../datasets/Something-Something-V2/labels/train.json
         # - ../../datasets/Something-Something-V2/labels/validation.json
@@ -214,7 +221,7 @@ training:
     batch_size_vla: 4
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 2
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2
