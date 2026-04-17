@@ -167,7 +167,7 @@ class RobotGroundingDataset(IterableDataset):
                 object_names = []
                 for n in g["object_names"][()]:
                     object_name = n.decode("utf-8") if isinstance(n, bytes) else str(n)
-                    object_name = object_name.replace('black bowl', 'bowl')
+                    object_name = object_name.replace('black bowl', 'gray bowl')
                     if object_name.startswith('the ') or object_name.startswith('The '):
                         object_name = object_name[4:]
                     object_names.append(object_name)

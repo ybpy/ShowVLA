@@ -329,7 +329,7 @@ class LIBEROEval:
             obs['robo_pos'] = robo_pos
 
             lang_ = lang
-            lang_ = lang_.replace('black bowl', 'bowl')
+            lang_ = lang_.replace('black bowl', 'gray bowl')
             action = policy.step(obs, lang_)
 
             images.append(_flip_agentview(obs['agentview_image']))
