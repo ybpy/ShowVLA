@@ -95,7 +95,7 @@ cd showvla-future_act_weighted_itf
 ln -s ../showvla-mix_weighted_itf/checkpoint-16000 checkpoint-0
 
 cd ../
-bash train_vla_mix.sh
+bash train_vla_future_act.sh
 ```
 
 # Evaluation
