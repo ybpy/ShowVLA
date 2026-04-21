@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_grounding0412"
-    output_dir: "showvla-mix_weighted_grounding0412"
+    name: "showvla-mix_weighted_grounding0421"
+    output_dir: "showvla-mix_weighted_grounding0421"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -124,7 +124,7 @@ dataset:
         add_caption_prompt: True
         validation_prompts_file: "prompts/t2i_prompts.txt"
         shuffle_buffer_size: 1000
-        num_workers: 4
+        num_workers: 1
         pin_memory: True
         persistent_workers: True
 
@@ -208,9 +208,10 @@ training:
     compile_mode: "default"
 
     grounding_metas_path: ./meta_grounding_data
-    batch_size_grounding: 6
+    batch_size_grounding: 4
     robot_grounding_metas_path: 
         - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
+        - ./grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0421.json
     batch_size_robot_grounding: 2
     robot_grounding_vis_mode: combine
     robot_grounding_num_samples_per_video: 4
@@ -218,11 +219,11 @@ training:
         # - ../../datasets/Something-Something-V2/labels/train.json
         # - ../../datasets/Something-Something-V2/labels/validation.json
     batch_size_video: 0
-    train_metas_path: ./meta_libero_data/split_all
-    batch_size_vla: 8
+    train_metas_path: ./meta_libero_data/split_all_max
+    batch_size_vla: 6
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 2
+    gradient_accumulation_steps: 3
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2
