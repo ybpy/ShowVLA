@@ -459,6 +459,7 @@ def main():
     # Iterable dataloader
     random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
+    given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -474,6 +475,7 @@ def main():
         pred_act=pred_act,
         random_query_duration=random_query_duration,
         num_future_imgs=num_future_imgs,
+        given_freq=given_freq,
     )
 
 
@@ -695,7 +697,6 @@ def main():
             # b n c h w
             pixel_values = batch['images'].to(accelerator.device).to(weight_type)
 
-            text_masks = batch['text_masks'].to(accelerator.device)
             image_masks = batch['image_masks'].to(accelerator.device)
             modality_positions = batch['modality_positions'].to(accelerator.device)
             if pred_act:
@@ -727,11 +728,10 @@ def main():
                                                 actions=action_positions if pred_act else None,
                                                 ).to(weight_type)
 
-            logits, loss_ntp, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
+            _, _, loss_flow, action_loss_dict = model(text_tokens=text_tokens,
                                                 image_latents=image_latents,
                                                 t=t.to(weight_type),
                                                 attention_mask=block_mask,
-                                                text_masks=text_masks,
                                                 image_masks=image_masks,
                                                 # action_masks=action_masks,
                                                 # text_labels=text_labels,

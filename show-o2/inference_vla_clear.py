@@ -229,6 +229,7 @@ if __name__ == '__main__':
     # Iterable dataloader
     random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
+    given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     mixed_loader = create_dataloader(
         num_workers=dataset_config.num_workers,
         batch_size=config.training.batch_size_vla,
@@ -244,6 +245,7 @@ if __name__ == '__main__':
         pred_act=pred_act,
         random_query_duration=random_query_duration,
         num_future_imgs=num_future_imgs,
+        given_freq=given_freq,
     )
 
     dtype = weight_type
