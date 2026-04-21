@@ -333,13 +333,16 @@ def read_parquet(path: str) -> dict:
     return pq.read_table(buf).to_pydict()
 
 def decode_image_from_bytes(x) -> Image.Image:
-    if isinstance(x, (bytes, bytearray)): x = np.frombuffer(x, dtype=np.uint8)
-    rgb = cv2.imdecode(x, cv2.IMREAD_COLOR)
-    if rgb is None:
-        rgb = np.frombuffer(x, dtype=np.uint8)
-        if rgb.size == 2764800: rgb = rgb.reshape(720, 1280, 3)
-        elif rgb.size == 921600: rgb = rgb.reshape(480, 640, 3)
-    return Image.fromarray(rgb)
+    # if isinstance(x, (bytes, bytearray)): x = np.frombuffer(x, dtype=np.uint8)
+    # rgb = cv2.imdecode(x, cv2.IMREAD_COLOR)
+    # if rgb is None:
+    #     rgb = np.frombuffer(x, dtype=np.uint8)
+    #     if rgb.size == 2764800: rgb = rgb.reshape(720, 1280, 3)
+    #     elif rgb.size == 921600: rgb = rgb.reshape(480, 640, 3)
+    # return Image.fromarray(rgb)
+    if isinstance(x, np.ndarray):
+        x = x.tobytes()
+    return Image.open(io.BytesIO(x))
 
 def quat_to_rotate6d(q: np.ndarray, scalar_first = False) -> np.ndarray:
     return R.from_quat(q, scalar_first = scalar_first).as_matrix()[..., :, :2].reshape(q.shape[:-1] + (6,))
