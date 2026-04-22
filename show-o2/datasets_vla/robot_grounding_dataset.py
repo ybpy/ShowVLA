@@ -115,11 +115,7 @@ class RobotGroundingDataset(IterableDataset):
         text_labels = [-100] + text_labels + [self.eos_id]
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
 
-        assert len(text_tokens) == len(text_labels), (
-            f"text: {text}, len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}"
-        )
-        if len(text_tokens) > self.max_seq_len:
-            return None
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"text: {text}, len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
         text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
@@ -167,10 +163,21 @@ class RobotGroundingDataset(IterableDataset):
                 object_names = []
                 for n in g["object_names"][()]:
                     object_name = n.decode("utf-8") if isinstance(n, bytes) else str(n)
+                    object_name = object_name.replace('_', ' ').strip()
                     object_name = object_name.replace('black bowl', 'gray bowl')
+                    object_name = object_name.replace('top drawer of the wooden cabinet', 'top drawer')
+                    object_name = object_name.replace('、', '')
                     if object_name.startswith('the ') or object_name.startswith('The '):
                         object_name = object_name[4:]
+                    if object_name.endswith('rameki'):
+                        object_name = object_name + 'n'
+                    if 'libero' in h5_path and '_turn_on_the_stove_demo_' in h5_path and object_name == 'stove':
+                        object_name = 'stove knob'
+
                     object_names.append(object_name)
+
+                if not(len(object_names) <= 4 and len(object_names) % 2 == 0):
+                    assert 'libero' in h5_path and 'KITCHEN_SCENE5_close_the_top_drawer' in h5_path, f"{h5_path}: {object_names}"
 
                 # 3. 核心优化：批量读取所有需要的帧到内存，然后立即关闭文件
                 # 如果存储的是 JPEG 字节流，内存占用很小
@@ -224,6 +231,7 @@ class RobotGroundingDataset(IterableDataset):
         vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb, object_names)
         # Generate instruction
         object_names_unique = list(set(object_names))
+        assert 1<= len(object_names_unique) <= 2, object_names_unique
         obj_str = ", ".join(object_names_unique)
         if task_mode == "bbox":
             text = f"Mark {obj_str} in the image with {color_name} bounding box:"
@@ -336,14 +344,15 @@ if __name__ == '__main__':
     )
 
     meta_paths = [
-        "/home/hyx/ShowVLA/show-o2/grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0417.json"
+        "/home/hyx/ShowVLA/show-o2/grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json",
+        "/home/hyx/ShowVLA/show-o2/grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0421.json",
     ]
     
     dataset = RobotGroundingDataset(
         meta_paths=meta_paths,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=872,
+        max_seq_len=880,
         image_size=(336, 320),
         num_image_tokens=420+1,
         vis_mode="combine",
@@ -391,5 +400,5 @@ if __name__ == '__main__':
             cv2.imwrite(out_path, cv2.cvtColor(combined_img, cv2.COLOR_RGB2BGR))
             print(f"  Saved {out_path}")
 
-        if i >= 100:
+        if i >= 1000:
             break  # 只测试前几个 batch
