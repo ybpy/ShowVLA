@@ -56,7 +56,7 @@ def setup_seed(seed):
     np.random.seed(seed)
 
 def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main, speed_up=2, image_stream_offset=1,
-        overwrite=False):
+        overwrite=False, dataset_name="JAKA"):
     os.makedirs(output_dir, exist_ok=True)
     
     try:
@@ -65,7 +65,7 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
         cur_episode = meta_json['num_ep']
     except:
         meta_json = {
-            "dataset_name": "JAKA",
+            "dataset_name": dataset_name,
             "data_dirs": [],
             "language_instruction_key": "language_instruction",
             "observation_key": ['rgb_comb'],
@@ -216,6 +216,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, required=True, help='Directory of raw JAKA data')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory for output HDF5 files')
     parser.add_argument('--meta_prefix', type=str, default='JAKA', help='Prefix for metainfo json file')
+    parser.add_argument('--dataset_name', type=str, default='JAKA', help='Dataset name in metainfo json')
     parser.add_argument('--speed_up', type=int, default=2)
     parser.add_argument('--image_stream_offset', type=int, default=1)
     parser.add_argument('--crop_main', type=str, default="(40, -140, 300, -300)")
@@ -236,4 +237,5 @@ if __name__ == '__main__':
         args.speed_up, 
         args.image_stream_offset,
         args.overwrite,
+        args.dataset_name,
     )
