@@ -146,3 +146,27 @@ class ATECupHandler(BaseHDF5Handler):
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         return range(0, max(0, T_left - 10))
+
+
+# ------------------------------- JAKA ---------------------------------------
+class JAKAHandler(BaseHDF5Handler):
+    """
+    JAKA.
+    HDF5:
+      /language_instruction [T]
+      /rgb_comb [T,H,W,3]
+      /eef_xyz_rotate6d_grip [T,10]
+    """
+    dataset_name = "JAKA"
+
+    def build_left_right(
+        self, f: h5py.File
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
+        freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
+        eef = f["eef_xyz_rotate6d_grip"][()]  # [T,10]
+        left = eef[:, :10]
+        right = eef[:, 10:]
+        return left, right, None, None, freq, qdur_max, qdur_min
+
+    def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
+        return range(0, max(0, T_left - 10))

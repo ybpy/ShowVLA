@@ -400,5 +400,5 @@ if __name__ == '__main__':
             cv2.imwrite(out_path, cv2.cvtColor(combined_img, cv2.COLOR_RGB2BGR))
             print(f"  Saved {out_path}")
 
-        if i >= 1000:
+        if i >= 2000:
             break  # 只测试前几个 batch

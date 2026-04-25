@@ -23,6 +23,8 @@ DATA_WEIGHTS = {
     "libero_10": 0.17,
     "libero_90": 0.2,
     "Calvin": 0.3,
+    "JAKA": 0.3,
+    "JAKA_clutter": 0.1,
 
     "robomind-franka": 0.1,
     "robomind-ur": 0.1,
@@ -52,6 +54,8 @@ DATA_DOMAIN_ID = {
     "libero_goal": 3,
     "libero_10": 3,
     "libero_90": 3,
+    "JAKA": 20,
+    "JAKA_clutter": 20,
     
     # ft
     "Bridge": 0,

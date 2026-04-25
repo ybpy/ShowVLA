@@ -23,7 +23,7 @@ from .lerobot_agibot import AGIBOTLeRobotHandler
 from .agiworld import AGIWolrdHandler
 from .robomind import RobomindHandler
 from .droid import DroidHandler
-from .real_world import AIRAgilexHandler, AIRAgilexHQHandler, AIRBotHandler, WidowxAirHandler, ATECupHandler
+from .real_world import AIRAgilexHandler, AIRAgilexHQHandler, AIRBotHandler, WidowxAirHandler, ATECupHandler, JAKAHandler
 from .simulations import BridgeHandler, LiberoHandler, VLABenchHandler, RobotWin2Handler, RobocasaHumanHandler, CalvinHandler, RT1Handler
 
 # 1) Exact registry only (no heuristics)
@@ -45,6 +45,10 @@ _REGISTRY: Dict[str, Type[DomainHandler]] = {
     # ATECup
     "atecup": ATECupHandler,
     "atecup_task4": ATECupHandler,
+
+    # JAKA
+    "JAKA": JAKAHandler,
+    "JAKA_clutter": JAKAHandler,
 
     # libero splits
     "libero_spatial": LiberoHandler,
