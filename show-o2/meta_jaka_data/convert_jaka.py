@@ -55,7 +55,8 @@ def combine_main_wrist_views(main_img, wrist_0_img, wrist_1_img,
 def setup_seed(seed):
     np.random.seed(seed)
 
-def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main, speed_up=2, image_stream_offset=1):
+def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main, speed_up=2, image_stream_offset=1,
+        overwrite=False):
     os.makedirs(output_dir, exist_ok=True)
     
     try:
@@ -104,11 +105,35 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
             print(f"Warning: h5_path {h5_path} already in datalist. Skipping!")
             continue
 
+        if os.path.exists(h5_path) and not overwrite:
+            print(f"Warning: {h5_path} exists. Directly add it to datalist!")
+            meta_json["datalist"].append(h5_path)
+            cur_episode += 1
+            print(f"[{cur_episode}][{ep_cnt+1}/{len(list_ep_folders)}] {episode_dir}", flush=True)
+            continue
+
         # Read data.json
         with open(os.path.join(episode_dir, 'data.json')) as json_f:
             json_data = json.load(json_f)
         
         task = json_data['info']['task']
+        enforce_close = json_data['info']['open_width'] == 0
+        init_left_grip = 0 if json_data['data'][0]['states']['gripper_state_l']['control_position'] >= 500 else 1
+        init_right_grip = 0 if json_data['data'][0]['states']['gripper_state_r']['control_position'] >= 500 else 1
+
+        list_act_grip_l = []
+        list_act_grip_r = []
+        for item in json_data['data']:
+            if enforce_close:
+                act_grip_l = 1
+                act_grip_r = 1
+            else:
+                act_grip_l = 1 if item['actions']['act_grip_l'] else 0
+                act_grip_r = 1 if item['actions']['act_grip_r'] else 0
+            list_act_grip_l.append(act_grip_l)
+            list_act_grip_r.append(act_grip_r)
+        list_grip_state_l = [init_left_grip] + list_act_grip_l[:-1]
+        list_grip_state_r = [init_right_grip] + list_act_grip_r[:-1]
         
         list_rgb_comb = []
         list_eef_xyz_rotate6d_grip = []
@@ -117,24 +142,25 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
         
         # Process frames
         for i, item in enumerate(json_data['data']):
-            # Proprioception: eef_pose_l + act_grip_l (assuming single arm for now, or need to clarify)
-            # Based on convert_lmdb_jaka.py, it's a dual-arm setup. 
-            # The prompt asks for a 10-dim vector: xyz (3) + rotate6d (6) + grip (1) = 10.
-            # This implies we might only be tracking one arm or a specific combined state.
-            # Given the 10-dim requirement, I will use the left arm's eef_pose and gripper state.
-            
             state = item['states']
             eef_pose_l = state['eef_pose_l'] # [x, y, z, roll, pitch, yaw]
-            xyz = eef_pose_l[:3]
-            euler = eef_pose_l[3:]
-            
-            # Convert euler to rotate6d using datasets_vla.utils.euler_to_rotate6d
-            rotate6d = euler_to_rotate6d(np.array(euler), pattern="xyz")
+            eef_pose_r = state['eef_pose_r'] # [x, y, z, roll, pitch, yaw]
 
-            grip = 1 if item['actions']['act_grip_l'] else 0
+            xyz_l = np.array(eef_pose_l[:3]) / 1000.0
+            euler_l = eef_pose_l[3:]
+            # Convert euler to rotate6d using datasets_vla.utils.euler_to_rotate6d
+            rotate6d_l = euler_to_rotate6d(np.array(euler_l), pattern="xyz")
+
+            xyz_r = np.array(eef_pose_r[:3]) / 1000.0
+            euler_r = eef_pose_r[3:]
+            # Convert euler to rotate6d using datasets_vla.utils.euler_to_rotate6d
+            rotate6d_r = euler_to_rotate6d(np.array(euler_r), pattern="xyz")
             
-            eef_10d = np.concatenate([xyz, rotate6d, [grip]])
-            list_eef_xyz_rotate6d_grip.append(eef_10d)
+            eef_xyz_rotate6d_grip = np.concatenate([
+                xyz_l, rotate6d_l, [list_grip_state_l[i]],
+                xyz_r, rotate6d_r, [list_grip_state_r[i]]
+            ])
+            list_eef_xyz_rotate6d_grip.append(eef_xyz_rotate6d_grip)
             
             # Images
             imgs = {}
@@ -143,8 +169,8 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
                 img = cv2.imread(img_path, cv2.IMREAD_COLOR)[:, :, ::-1].copy() # BGR -> RGB
                 
                 if cam_name == 'rgb_main':
-                    if img.shape == (720, 1280, 3):
-                        img = img[crop_main[0]:crop_main[1], crop_main[2]:crop_main[3]]
+                    assert img.shape == (720, 1280, 3)
+                    img = img[crop_main[0]:crop_main[1], crop_main[2]:crop_main[3]]
                 
                 imgs[cam_name] = img
             
@@ -152,18 +178,17 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
             list_rgb_comb.append(comb_img)
 
         # Apply speed_up and offset (matching convert_lmdb_jaka.py logic)
+        list_rgb_comb = list_rgb_comb[image_stream_offset:]
         if speed_up != 1:
             list_eef_xyz_rotate6d_grip = list_eef_xyz_rotate6d_grip[::speed_up]
-            list_rgb_comb = list_rgb_comb[image_stream_offset:][::speed_up]
+            list_rgb_comb = list_rgb_comb[::speed_up]
 
         # Align lengths (matching convert_lmdb_jaka.py logic)
-        num_steps = min(len(list_eef_xyz_rotate6d_grip) - 1, len(list_rgb_comb))
-        if len(list_rgb_comb) > num_steps:
-            list_rgb_comb = list_rgb_comb[:num_steps]
+        num_steps = min(len(list_eef_xyz_rotate6d_grip), len(list_rgb_comb))
+        list_rgb_comb = list_rgb_comb[:num_steps]
         list_eef_xyz_rotate6d_grip = list_eef_xyz_rotate6d_grip[:num_steps]
 
-        if num_steps <= 0:
-            continue
+        assert num_steps > 0
 
         rgb_comb_bytes = encode_frames_to_jpeg_bytes(list_rgb_comb)
         str_dtype = h5py.string_dtype(encoding="utf-8")
@@ -176,7 +201,7 @@ def convert_jaka_to_hdf5(data_dir, output_dir, metainfo_json_out_path, crop_main
 
         # Save to MP4
         mp4_path = h5_path.replace(".hdf5", ".mp4")
-        media.write_video(mp4_path, list_rgb_comb, fps=30)
+        media.write_video(mp4_path, list_rgb_comb, fps=20)
 
         meta_json["datalist"].append(h5_path)
         cur_episode += 1
@@ -194,6 +219,8 @@ if __name__ == '__main__':
     parser.add_argument('--speed_up', type=int, default=2)
     parser.add_argument('--image_stream_offset', type=int, default=1)
     parser.add_argument('--crop_main', type=str, default="(40, -140, 300, -300)")
+    parser.add_argument('--overwrite', action='store_true', default=False)
+
     args = parser.parse_args()
 
     setup_seed(0)
@@ -203,9 +230,10 @@ if __name__ == '__main__':
     
     convert_jaka_to_hdf5(
         args.data_dir, 
-        args.output_dir, 
+        args.output_dir,
         metainfo_json_out_path, 
         crop_main, 
         args.speed_up, 
-        args.image_stream_offset
+        args.image_stream_offset,
+        args.overwrite,
     )
