@@ -79,7 +79,7 @@ if __name__ == '__main__':
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
-                                                         add_return_act_token_ids=pred_act)
+                                                         add_return_act_token_ids=True)
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     print(config.model.showo)

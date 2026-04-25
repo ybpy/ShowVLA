@@ -1,8 +1,8 @@
 """
-SAM2 Video Labeling Tool — Gradio Interactive Version (JAKA 三视角版)
+SAM2 Video Labeling Tool — Gradio Interactive Version (双臂三视角版)
 
 Usage:
-    python sam2_label_server_jaka.py \
+    python sam2_label_server_bimanual.py \
         --input_dir  /path/to/hdf5_folder \
         --output_dir /path/to/output \
         --model_cfg  configs/sam2.1/sam2.1_hiera_b+.yaml \
@@ -527,11 +527,21 @@ def camera_view_to_label(view_name):
     }.get(view_name, view_name)
 
 
+FRAME_KEYS_15 = [
+    "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
+    "f10", "f11", "f12", "f13", "f14",
+]
+FRAME_LABELS_15 = [
+    "初始帧", "1/14帧", "2/14帧", "3/14帧", "4/14帧", "5/14帧", "6/14帧", "7/14帧", "8/14帧", "9/14帧",
+    "10/14帧", "11/14帧", "12/14帧", "13/14帧", "最终帧",
+]
+
+
 # ═══════════════════════════ Status text builder ═══════════════════════════
 
 def build_status_text(state):
-    frame_keys = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14"]
-    frame_labels = ["初始帧", "1/14帧", "2/14帧", "3/14帧", "4/14帧", "5/14帧", "6/14帧", "7/14帧", "8/14帧", "9/14帧", "10/14帧", "11/14帧", "12/14帧", "13/14帧", "最终帧"]
+    frame_keys = FRAME_KEYS_15
+    frame_labels = FRAME_LABELS_15
     frame_indices = [int(state.get(f"{k}_frame_idx", 0)) for k in frame_keys]
     lang = state.get("language_instruction") or "(无)"
 
@@ -913,7 +923,7 @@ def main():
             # ---- left column: image + video ----
             with gr.Column(scale=3):
                 image_out = gr.Image(
-                    label="标注帧（可切换 初始帧、1/14…13/14、最终帧）— 点击添加标注点",
+                    label="标注帧（可切换关键帧）— 左键正点 / 右键负点",
                     type="numpy",
                     interactive=False,
                     elem_id="sam2-annot-image",
@@ -927,7 +937,7 @@ def main():
                 )
                 status_box = gr.Textbox(
                     label="📋 标注状态", interactive=False, lines=8,
-                    value="正在加载 …\n提示：先在名称框输入并按回车确认，再选点类型并左键点击添加",
+                    value="正在加载 …\n提示：名称回车确认后，左键=正点、右键=负点",
                 )
 
                 obj_name_in = gr.Textbox(
@@ -936,12 +946,8 @@ def main():
                     interactive=True,
                 )
 
-                click_mode = gr.Radio(
-                    choices=["正点 (+)", "负点 (-)"],
-                    value="正点 (+)",
-                    label="当前点击类型",
-                    interactive=True,
-                )
+                # 由前端 JS 在每次图像 select 前写入 1=正点 0=负点，供 h_click 读取
+                click_label_code = gr.Number(value=1, visible=False)
 
                 frame_mode = gr.Radio(
                     choices=["初始帧", "1/14", "2/14", "3/14", "4/14", "5/14", "6/14", "7/14", "8/14", "9/14", "10/14", "11/14", "12/14", "13/14", "最终帧"],
@@ -961,11 +967,14 @@ def main():
                     btn_undo_pt  = gr.Button("↩️ 撤销上一个点", size="sm")
 
                 with gr.Row():
-                    btn_process_obj = gr.Button("🚀 完成标注并处理当前物体", variant="stop")
+                    btn_process_obj = gr.Button("🚀 处理当前物体标注", variant="stop")
 
                 with gr.Row():
                     btn_accept_obj = gr.Button("✅ 接受该物体并继续下一个", variant="primary", size="sm")
                     btn_redo_obj   = gr.Button("🔄 重新标注该物体", size="sm")
+
+                with gr.Row():
+                    btn_undo_accept = gr.Button("↩️ 撤销上一个物体", size="sm")
 
                 with gr.Row():
                     btn_done = gr.Button("🏁 完成文件并处理全部已接受物体", variant="stop")
@@ -984,7 +993,6 @@ def main():
                 build_status_text(state),
                 None,   # video_out
                 state.get("last_obj_name", ""),
-                "正点 (+)",
                 "初始帧",
                 "主视角",
             )
@@ -1033,10 +1041,6 @@ def main():
                 }
             return obj
 
-        def h_set_click_mode(state, mode_text):
-            state["current_click_label"] = 0 if mode_text == "负点 (-)" else 1
-            return state, build_status_text(state)
-
         def h_set_frame_mode(state, mode_text):
             mapping = {
                 "初始帧": "f0",
@@ -1066,10 +1070,14 @@ def main():
             }.get(mode_text, "main")
             return state, build_status_text(state)
 
-        def h_click(state, evt: gr.SelectData):
-            """用户在图片上点击 → 添加一个标注点."""
+        def h_click(state, label_code: float, evt: gr.SelectData):
+            """用户在图片上点击 → 添加一个标注点（左键正点 / 右键负点，见前端 JS）."""
             if state["phase"] != "clicking":
-                return state, gr.update(), "⚠️ 请先输入并确认物体名称"
+                return (
+                    state,
+                    gr.update(),
+                    "⚠️ 请先输入并确认物体名称",
+                )
             # evt.index → [x, y] 是浏览器显示空间的坐标
             # 需要除以 scale 转换回原图像素坐标（用于 SAM2 推理）
             frames = _get_frames(state)
@@ -1079,7 +1087,11 @@ def main():
             scale = compute_display_scale(frames[prompt_idx])
             x_orig = float(evt.index[0]) / scale
             y_orig = float(evt.index[1]) / scale
-            lb = int(state.get("current_click_label", 1))
+            try:
+                lb = int(round(float(label_code))) & 1
+            except (TypeError, ValueError):
+                lb = int(state.get("current_click_label", 1))
+            state["current_click_label"] = lb
             state["current_points"].setdefault(active_key, []).append(
                 {"xy": [x_orig, y_orig], "label": int(lb)}
             )
@@ -1235,6 +1247,76 @@ def main():
             state["phase"] = "clicking"
             camera_mode_value = camera_view_to_label(state["current_camera_view"])
             return state, get_display_image(state), build_status_text(state), state.get("current_obj_name", ""), gr.update(), camera_mode_value
+
+        def h_undo_last_accepted(state):
+            """撤销最近一次「接受该物体」：从已接受列表移除并恢复为待预览（可重标/再接受）。"""
+            if state.get("phase") == "all_done":
+                return (
+                    state, gr.update(),
+                    "⚠️ 所有文件已处理完毕",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("phase") == "processing":
+                return (
+                    state, gr.update(),
+                    "⚠️ 正在处理文件中，请稍候",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("draft_object") is not None:
+                return (
+                    state, gr.update(),
+                    "⚠️ 当前有待预览物体。请先接受或「重新标注该物体」后再撤销已接受物体。",
+                    gr.update(), gr.update(), gr.update(),
+                )
+            if state.get("phase") == "clicking":
+                total_points = sum(len(v) for v in state.get("current_points", {}).values())
+                if total_points > 0 or (state.get("current_obj_name") or "").strip():
+                    return (
+                        state, gr.update(),
+                        "⚠️ 当前正在标注新物体。请先处理/清空当前标注后再撤销已接受物体。",
+                        gr.update(), gr.update(), gr.update(),
+                    )
+            if not state.get("completed_objects"):
+                return (
+                    state, gr.update(),
+                    "⚠️ 没有可撤销的已接受物体",
+                    gr.update(), gr.update(), gr.update(),
+                )
+
+            obj = state["completed_objects"].pop()
+            result = state["completed_results"].pop()
+            state["draft_object"] = obj
+            state["draft_result"] = result
+            state["phase"] = "reviewing"
+
+            idx = state["file_idx"]
+            h5_path = pending[idx]
+            frames = _get_frames(state)
+            preview_video = output_dir / (h5_path.stem + "_preview_current_obj.mp4")
+            status_lines = [f"↩️ 已撤销接受「{obj.get('name', '(未命名)')}」，已恢复为待预览。"]
+            try:
+                render_grounding_video(
+                    str(preview_video),
+                    frames,
+                    result["bbox"],
+                    result["masks"],
+                    [obj.get("name", "obj1")],
+                    args.render_fps,
+                )
+                state["preview_video_path"] = str(preview_video)
+                status_lines.append("✅ 已刷新预览视频")
+            except Exception as e:
+                status_lines.append(f"❌ 刷新预览失败: {e}")
+                traceback.print_exc()
+
+            return (
+                state,
+                get_display_image(state),
+                "\n".join(status_lines) + "\n\n" + build_status_text(state),
+                file_info_text(state),
+                str(preview_video) if preview_video.exists() else None,
+                obj.get("name", "") or state.get("last_obj_name", ""),
+            )
 
         def h_done(state):
             """完成文件：处理全部已接受物体并保存结果，然后加载下一个文件。"""
@@ -1428,24 +1510,39 @@ def main():
         # page load
         demo.load(
             h_load, [app_state],
-            [app_state, image_out, info_box, status_box, video_out, obj_name_in, click_mode, frame_mode, camera_mode],
+            [app_state, image_out, info_box, status_box, video_out, obj_name_in, frame_mode, camera_mode],
             js="""
             (s) => {
-                // 禁用标注图像上的浏览器右键菜单，避免干扰右键打负点
                 setTimeout(() => {
                     const root = document.getElementById('sam2-annot-image');
                     if (!root) return;
-                    root.addEventListener('contextmenu', (e) => e.preventDefault());
+                    // 记录最近一次按键：0=左键 2=右键（与浏览器 MouseEvent.button 一致）
+                    root.addEventListener('pointerdown', (e) => {
+                        window.__sam2_last_btn = e.button;
+                    }, true);
+                    // 浏览器对右键不触发 Image 的 click/select，因此在右键菜单阶段合成一次 click
+                    root.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        const img = root.querySelector('img');
+                        if (!img) return;
+                        const t = e.target;
+                        const onFrame = t === img || (img.contains && img.contains(t))
+                            || (t && t.closest && t.closest('.image-frame'));
+                        if (!onFrame) return;
+                        const btnEl = img.closest('button');
+                        if (!btnEl) return;
+                        btnEl.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: e.clientX,
+                            clientY: e.clientY,
+                            view: window
+                        }));
+                    });
                 }, 300);
                 return [s];
             }
             """,
-        )
-
-        # switch click mode (positive / negative)
-        click_mode.change(
-            h_set_click_mode, [app_state, click_mode],
-            [app_state, status_box],
         )
 
         # switch annotation frame (0 / 1/10 / ... / 9/10)
@@ -1465,8 +1562,22 @@ def main():
             [app_state, image_out, status_box, obj_name_in, frame_mode],
         )
 
-        # click on image → add point
-        image_out.select(h_click, [app_state], outs_3)
+        # click on image → add point（前端 JS 根据左/右键写入 click_label_code）
+        image_out.select(
+            h_click,
+            [app_state, click_label_code],
+            outs_3,
+            js="""
+            async (state, label_code) => {
+                const b = (typeof window.__sam2_last_btn === 'number') ? window.__sam2_last_btn : 0;
+                let lb;
+                if (b === 2) lb = 0;
+                else if (b === 0) lb = 1;
+                else lb = Math.round(Number(label_code)) & 1;
+                return [state, lb];
+            }
+            """,
+        )
 
         # undo point
         btn_undo_pt.click(h_undo_point,  [app_state], outs_3)
@@ -1481,6 +1592,12 @@ def main():
         btn_accept_obj.click(
             h_accept_obj, [app_state],
             [app_state, image_out, status_box, obj_name_in],
+        )
+
+        # undo last accepted object (restore as draft for review)
+        btn_undo_accept.click(
+            h_undo_last_accepted, [app_state],
+            [app_state, image_out, status_box, info_box, video_out, obj_name_in],
         )
 
         # redo current draft object
