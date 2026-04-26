@@ -176,8 +176,8 @@ class RobotGroundingDataset(IterableDataset):
 
                     object_names.append(object_name)
 
-                if not(len(object_names) <= 4 and len(object_names) % 2 == 0):
-                    assert 'libero' in h5_path and 'KITCHEN_SCENE5_close_the_top_drawer' in h5_path, f"{h5_path}: {object_names}"
+                if 'libero' in h5_path and not(len(object_names) <= 4 and len(object_names) % 2 == 0):
+                    assert 'KITCHEN_SCENE5_close_the_top_drawer' in h5_path, f"{h5_path}: {object_names}"
 
                 # 3. 核心优化：批量读取所有需要的帧到内存，然后立即关闭文件
                 # 如果存储的是 JPEG 字节流，内存占用很小

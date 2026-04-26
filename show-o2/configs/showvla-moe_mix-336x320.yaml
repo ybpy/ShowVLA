@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_grounding0421"
-    output_dir: "showvla-mix_weighted_grounding0421"
+    name: "showvla-mix_weighted_grounding_jaka"
+    output_dir: "showvla-mix_weighted_grounding_jaka"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -195,11 +195,11 @@ transport:
     time_shifting_factor: 3.0
 
 xvla:
-    num_actions: 30
+    num_actions: 24
     action_mode: ee6d
     random_query_duration: False
     num_future_imgs: 1
-    given_freq: 30.0
+    given_freq: 24.0
 
 training:
     use_lora: False
@@ -208,18 +208,19 @@ training:
     compile_mode: "default"
 
     grounding_metas_path: ./meta_grounding_data
-    batch_size_grounding: 4
+    batch_size_grounding: 5
     robot_grounding_metas_path: 
         - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
         - ./grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0421.json
-    batch_size_robot_grounding: 2
+        - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0426.json
+    batch_size_robot_grounding: 1
     robot_grounding_vis_mode: combine
-    robot_grounding_num_samples_per_video: 4
+    robot_grounding_num_samples_per_video: 1
     video_metas_paths: null
         # - ../../datasets/Something-Something-V2/labels/train.json
         # - ../../datasets/Something-Something-V2/labels/validation.json
     batch_size_video: 0
-    train_metas_path: ./meta_libero_data/split_all_max
+    train_metas_path: ./meta_join_libero_jaka/split_all_max_JAKA
     batch_size_vla: 6
     action_coeff: 1.0
 
