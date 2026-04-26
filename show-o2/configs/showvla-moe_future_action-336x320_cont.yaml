@@ -14,7 +14,7 @@ experiment:
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
-    save_every: 2000
+    save_every: 1000
     generate_every: 5000
     log_every: 20
     log_grad_norm_every: 20
@@ -207,7 +207,7 @@ training:
     use_compile: True
     compile_mode: "default"
 
-    train_metas_path: ./meta_join_libero_jaka/split_all_max_JAKA
+    train_metas_path: ./meta_join_libero_jaka/split_spatial_object_goal_10_max_JAKA
     batch_size_vla: 14
     action_coeff: 1.0
 

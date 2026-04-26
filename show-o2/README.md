@@ -40,6 +40,17 @@
 | :---: | :---: | :---: | :---: |
 | 92.4% | 99.4% | 98% | 80% |
 
+20260412 weighted LIBERO data, grounding LIBERO-90
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+|  |  |  |  |
+
+20260421 weighted LIBERO data, grounding LIBERO-Spatial, LIBERO-90, fix decode image bug!
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 94.2% | 98.4% | 98.4% | 90.6% |
+
+
 # Data
 ## COCO Data
 
@@ -95,7 +106,11 @@ cd showvla-future_act_weighted_itf
 ln -s ../showvla-mix_weighted_itf/checkpoint-16000 checkpoint-0
 
 cd ../
+# Continue on full LIBERO and JAKA data
 bash train_vla_future_act.sh
+
+# Continue finetuning on data of target tasks
+bash train_vla_future_act_cont.sh
 ```
 
 # Evaluation
