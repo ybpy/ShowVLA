@@ -229,9 +229,9 @@ class RobotGroundingDataset(IterableDataset):
         assert 1<= len(object_names_unique) <= 2, object_names_unique
         obj_str = ", ".join(object_names_unique)
         if task_mode == "bbox":
-            text = f"Mark {obj_str} in the image with {color_name} bounding box. Image with marked {obj_str}:"
+            text = f"Mark {obj_str} in the image with {color_name} bounding box:"
         elif task_mode == "segment_mask":
-            text = f"Segment {obj_str} in the image with {color_name} mask. Image with segmented {obj_str}:"
+            text = f"Segment {obj_str} in the image with {color_name} mask:"
         else: # combine
             text = f"Mark with {color_name} bounding box and segment mask for {obj_str} in the image:"
 
