@@ -24,7 +24,7 @@ def decode_jpeg_object(obj):
 
 class RobotGroundingDataset(IterableDataset):
     """
-    Iterable Dataset for Robot Grounding task, supporting bbox, segment_mask, rand, and combine visualization modes.
+    Iterable Dataset for Robot Grounding task, supporting bbox, segment_mask, rand (uniform among bbox / segment_mask / combine), and combine visualization modes.
     Supports random sampling N frames from each video to form N samples.
     """
     def __init__(
@@ -35,9 +35,8 @@ class RobotGroundingDataset(IterableDataset):
         max_seq_len: int,
         image_size: Tuple[int, int],
         num_image_tokens: int,
-        vis_mode: str = "combine", # "bbox", "segment_mask", "rand", "combine"
+        vis_mode: str = "rand", # "bbox", "segment_mask", "rand", "combine"
         mask_color_weight: float = 0.5, # Consistent with GroundingDataset
-        prob_bbox: float = 0.5, # Used when vis_mode is "rand" to decide between bbox and mask
         num_samples_per_video: int = 4, # Number of random frames to sample per video
     ):
         if isinstance(meta_paths, str):
@@ -51,7 +50,6 @@ class RobotGroundingDataset(IterableDataset):
         
         self.vis_mode = vis_mode
         self.mask_color_weight = mask_color_weight
-        self.prob_bbox = prob_bbox
         self.num_samples_per_video = num_samples_per_video
         
         # Consistent with GroundingDataset
@@ -213,12 +211,9 @@ class RobotGroundingDataset(IterableDataset):
         task_mode = self.vis_mode
         
         if self.vis_mode == "rand":
-            if np.random.rand() < self.prob_bbox:
-                current_vis_mode = "bbox"
-                task_mode = "bbox"
-            else:
-                current_vis_mode = "segment_mask"
-                task_mode = "segment_mask"
+            mode_pick = np.random.choice(["bbox", "segment_mask", "combine"])
+            current_vis_mode = mode_pick
+            task_mode = mode_pick
         elif self.vis_mode == "combine":
             current_vis_mode = "combine"
             task_mode = "combine"
@@ -234,9 +229,9 @@ class RobotGroundingDataset(IterableDataset):
         assert 1<= len(object_names_unique) <= 2, object_names_unique
         obj_str = ", ".join(object_names_unique)
         if task_mode == "bbox":
-            text = f"Mark {obj_str} in the image with {color_name} bounding box:"
+            text = f"Mark {obj_str} in the image with {color_name} bounding box. Image with marked {obj_str}:"
         elif task_mode == "segment_mask":
-            text = f"Segment {obj_str} in the image with {color_name} mask:"
+            text = f"Segment {obj_str} in the image with {color_name} mask. Image with segmented {obj_str}:"
         else: # combine
             text = f"Mark with {color_name} bounding box and segment mask for {obj_str} in the image:"
 
@@ -355,7 +350,7 @@ if __name__ == '__main__':
         max_seq_len=880,
         image_size=(336, 320),
         num_image_tokens=420+1,
-        vis_mode="combine",
+        vis_mode="rand",
         num_samples_per_video=4,
     )
     
