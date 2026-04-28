@@ -7,3 +7,6 @@ show-o2/wandb
 *.json
 *.bin
 *.log
+*config.yaml
+*checkpoint-0
+*serve_*
