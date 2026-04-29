@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_grounding_jaka"
-    output_dir: "showvla-mix_weighted_grounding_jaka"
+    name: "showvla-mix_weighted_grounding_jaka0430"
+    output_dir: "showvla-mix_weighted_grounding_jaka0430"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -212,9 +212,12 @@ training:
     robot_grounding_metas_path: 
         - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
         - ./grounding_data_ann/meta_libero/split/libero_spatial_grounding_metainfo_0421.json
+        - ./grounding_data_ann/meta_libero/split/libero_10_grounding_metainfo_0430.json
+        - ./grounding_data_ann/meta_libero/split/libero_object_grounding_metainfo_0430.json
+        - ./grounding_data_ann/meta_libero/split/libero_goal_grounding_metainfo_0430.json
         - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0426.json
     batch_size_robot_grounding: 1
-    robot_grounding_vis_mode: combine
+    robot_grounding_vis_mode: rand
     robot_grounding_num_samples_per_video: 1
     video_metas_paths: null
         # - ../../datasets/Something-Something-V2/labels/train.json
@@ -231,10 +234,10 @@ training:
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 0
-    max_train_steps: 16000
+    max_train_steps: 20000
     cond_dropout_prob: 0.1
     label_smoothing: 0.0
-    max_grad_norm: 1.0
+    max_grad_norm: 0.8
     ntp_coeff: 0.2
     flow_coeff: 1.0
     und_max_t0: 1.0
