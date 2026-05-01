@@ -23,7 +23,7 @@ DATA_WEIGHTS = {
     "libero_10": 0.17,
     "libero_90": 0.2,
     "Calvin": 0.3,
-    "JAKA": 0.5,
+    "JAKA": 0.3,
     "JAKA_clutter": 0.1,
 
     "robomind-franka": 0.1,

@@ -41,14 +41,23 @@
 | 92.4% | 99.4% | 98% | 80% |
 
 20260412 weighted LIBERO data, grounding LIBERO-90
-| Spatial | Object | Goal | Long |
-| :---: | :---: | :---: | :---: |
-|  |  |  |  |
+|  | Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: | :---: |
+| 14000 | 95 | 99.6 | 98.4 | 86 |
+| 16000 | 91.6 | 98.4 | 98.6 | 90.2 |
+| 14000bgr | 94 | 98.8 | 98 | 92.2 |
+| 16000bgr | 92.6 | 98.6 | 98.6 | 91 |
 
 20260421 weighted LIBERO data, grounding LIBERO-Spatial, LIBERO-90, fix decode image bug!
 | Spatial | Object | Goal | Long |
 | :---: | :---: | :---: | :---: |
 | 94.2% | 98.4% | 98.4% | 90.6% |
+
+
+20260429 weighted LIBERO + JAKA, grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+| Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: |
+| 94.4% | 99% | 96.8% | 94.4% |
 
 
 # Data

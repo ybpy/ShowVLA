@@ -119,10 +119,11 @@ class LiberoHandler(BaseHDF5Handler):
         return left, right, None, None, freq, qdur_max, qdur_min
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
-        candidates = list(range(0, max(0, T_left - 10)))
-        downsample_rate = 2
-        n_keep = min(len(candidates), max(1, len(candidates) // downsample_rate))
-        return random.sample(candidates, n_keep)
+        return range(0, max(0, T_left - 10))
+        # candidates = list(range(0, max(0, T_left - 10)))
+        # downsample_rate = 2
+        # n_keep = min(len(candidates), max(1, len(candidates) // downsample_rate))
+        # return random.sample(candidates, n_keep)
 
 
 # ------------------------------ VLABench -------------------------------------

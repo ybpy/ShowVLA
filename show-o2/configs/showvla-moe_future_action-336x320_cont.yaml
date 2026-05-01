@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-future_act_weighted_grounding_jaka"
-    output_dir: "showvla-future_act_weighted_grounding_jaka"
+    name: "showvla-future_act_weighted_grounding_jaka0430"
+    output_dir: "showvla-future_act_weighted_grounding_jaka0430"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -218,7 +218,7 @@ training:
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 0
-    max_train_steps: 10000
+    max_train_steps: 20000
     cond_dropout_prob: 0.1
     label_smoothing: 0.0
     max_grad_norm: 1.0
