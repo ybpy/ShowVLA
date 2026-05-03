@@ -187,6 +187,7 @@ def main():
             use_safetensors=False,
             low_cpu_mem_usage=False,
             device_map=None,
+            add_time_embeds=config.model.showo.get('add_time_embeds', True),
             use_img_trans_field=use_img_trans_field,
             xvla_hidden_size=config.model.showo.get('xvla_hidden_size', None),
             xvla_depth=config.model.showo.get('xvla_depth', 2),
@@ -202,6 +203,14 @@ def main():
             model.showo.resize_token_embeddings(config.model.showo.llm_vocab_size)
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
+
+    if accelerator.is_main_process:
+        try:
+            model_cfg = model.config.to_dict() if hasattr(model.config, "to_dict") else dict(model.config)
+            logger.info("Effective model.config loaded by model:")
+            logger.info(json.dumps(model_cfg, ensure_ascii=False, indent=2, default=str))
+        except Exception:
+            logger.info(f"Effective model.config loaded by model: {model.config}")
 
     # Drop-upcycling if needed
     drop_upcycling = config.model.showo.get('drop_upcycling', False)
@@ -464,7 +473,7 @@ def main():
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     xvla_loader = create_dataloader(
-        num_workers=dataset_config.num_workers,
+        num_workers=3, # dataset_config.num_workers
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
         num_actions=config.xvla.num_actions,
@@ -968,6 +977,7 @@ def main():
 
         # Stop training if max steps is reached
         if global_step >= config.training.max_train_steps:
+            save_checkpoint(model, config, accelerator, global_step)
             break
         # End for
 
