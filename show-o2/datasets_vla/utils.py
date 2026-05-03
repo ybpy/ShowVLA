@@ -61,6 +61,39 @@ MASK_COLORS = {
     "khaki": (189, 183, 107),
 }
 
+def check_can_use_bbox(instances):
+    bboxes = []
+    for ann in instances:
+        if ann["iscrowd"]:
+            return False
+        segm = ann["segmentation"]
+        assert type(segm) == list, segm
+        if len(segm) > 1:
+            return False
+        
+        bbox = ann["bbox"]
+        bboxes.append(bbox)
+    
+    if len(bboxes) > 8:
+        return False
+    return True
+
+def get_bboxes_text(img_w, img_h, bbox_xywh):
+    # 1. 预处理：提取并转换 bbox 格式
+    processed = []
+    for x, y, w, h in bbox_xywh:
+        x1, y1 = int(round(x)), int(round(y))
+        x2, y2 = int(round(x + w)), int(round(y + h))
+        processed.append((x1, y1, x2, y2))  # 暂存坐标用于排序
+    # 2. 排序：先按 y1（自上而下），再按 x1（自左向右）
+    processed_sorted = sorted(processed, key=lambda b: (b[1], b[0]))
+    # 3. 生成归一化文本并拼接
+    bboxes_text = [
+        f"[{x1/img_w:.3f},{y1/img_h:.3f},{x2/img_w:.3f},{y2/img_h:.3f}]"
+        for x1, y1, x2, y2 in processed_sorted
+    ]
+    return ' '.join(bboxes_text)
+
 def try_get_img_with_bbox(img, instances, color):
     img = np.array(img)
     img_h, img_w, c = img.shape

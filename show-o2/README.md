@@ -102,6 +102,8 @@ An example script is provided as `show-o2/meta_grounding_data/ade20k/ade20k_data
 ```
 cd ShowVLA/show-o2
 bash train_vla_mix.sh
+# For VQA-style, use the following command instead
+bash train_vla_mix_vqa.sh
 ```
 
 ## Stage 2

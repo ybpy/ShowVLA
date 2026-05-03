@@ -23,6 +23,8 @@ from .vqa_dataset import VQADataset
 from .eo_dataset import EO_VQADataset
 from .grounding_dataset import GroundingDataset
 from .robot_grounding_dataset import RobotGroundingDataset
+from .vqa_grounding_dataset import VQAGroundingDataset
+from .vqa_robot_grounding_dataset import VQARobotGroundingDataset
 from .video_dataset import create_video_dataset_loader
 from .mixed_dataloader import MixedDataLoader
 
