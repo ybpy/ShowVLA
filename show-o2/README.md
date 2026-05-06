@@ -59,6 +59,12 @@
 | :---: | :---: | :---: | :---: |
 | 94.4% | 99% | 96.8% | 94.4% |
 
+20260504 weighted LIBERO + JAKA + JAKA-moveto, grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+|  | Spatial | Object | Goal | Long |
+| :---: | :---: | :---: | :---: | :---: |
+| 18000 | 94.4 | 99.6 | 98.4 | 94.2 |
+| 19000 | 93 | 98.2 | 99 | 94.2 |
+| 20000 | 94.6 | 99.8 | 95 | 95.4 |
 
 # Data
 ## COCO Data
@@ -103,7 +109,9 @@ An example script is provided as `show-o2/meta_grounding_data/ade20k/ade20k_data
 cd ShowVLA/show-o2
 bash train_vla_mix.sh
 # For VQA-style, use the following command instead
-bash train_vla_mix_vqa.sh
+# bash train_vla_mix_vqa.sh
+# For VQA-style + Visualized Grounding, use the following command instead
+# bash train_vla_mix_comb.sh
 ```
 
 ## Stage 2

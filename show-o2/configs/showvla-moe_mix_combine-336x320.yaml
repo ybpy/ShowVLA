@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_VQAgrounding_jaka0506"
-    output_dir: "showvla-mix_weighted_VQAgrounding_jaka0506"
+    name: "showvla-mix_weighted_COMBgrounding_jaka"
+    output_dir: "showvla-mix_weighted_COMBgrounding_jaka"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -207,6 +207,7 @@ training:
     use_compile: True
     compile_mode: "default"
 
+    use_visualized_grounding: True
     grounding_metas_path: ./meta_grounding_data
     batch_size_grounding: 5
     robot_grounding_metas_path: 

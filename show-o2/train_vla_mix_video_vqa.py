@@ -56,7 +56,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets_vla import MixedDataLoader, VQAGroundingDataset, VQARobotGroundingDataset
+from datasets_vla import MixedDataLoader, VQAGroundingDataset, VQARobotGroundingDataset, GroundingDataset, RobotGroundingDataset
 from datasets_vla import create_dataloader, create_video_dataset_loader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
@@ -513,10 +513,12 @@ def main():
                                             persistent_workers=True)
         return dataloader
 
+    vqa_grounding_iter = None
+    vqa_robot_grounding_iter = None
     iti_iter = None
     iti_robot_iter = None
     if config.training.grounding_metas_path:
-        dataset = VQAGroundingDataset(
+        vqa_grounding_dataset = VQAGroundingDataset(
             metas_path=config.training.grounding_metas_path,
             text_tokenizer=text_tokenizer,
             showo_token_ids=showo_token_ids,
@@ -524,14 +526,27 @@ def main():
             image_size=preproc_config.vla_image_size,
             num_image_tokens=preproc_config.num_vla_image_tokens,
         )
-        train_dataloader_grounding = create_grounding_dataloader(dataset,
+        train_dataloader_vqa_grounding = create_grounding_dataloader(vqa_grounding_dataset,
                                                         config.training.batch_size_grounding,
-                                                        dataset.collate_fn)
-        # loader_list.append(train_dataloader_grounding)
-        iti_iter = iter(train_dataloader_grounding)
+                                                        vqa_grounding_dataset.collate_fn)
+        vqa_grounding_iter = iter(train_dataloader_vqa_grounding)
+
+        if config.training.get('use_visualized_grounding', False):
+            dataset = GroundingDataset(
+                metas_path=config.training.grounding_metas_path,
+                text_tokenizer=text_tokenizer,
+                showo_token_ids=showo_token_ids,
+                max_seq_len=preproc_config.max_vla_seq_len,
+                image_size=preproc_config.vla_image_size,
+                num_image_tokens=preproc_config.num_vla_image_tokens,
+            )
+            train_dataloader_grounding = create_grounding_dataloader(dataset,
+                                                            config.training.batch_size_grounding,
+                                                            dataset.collate_fn)
+            iti_iter = iter(train_dataloader_grounding)
 
     if config.training.get('robot_grounding_metas_path', None):
-        robot_dataset = VQARobotGroundingDataset(
+        vqa_grounding_robot_dataset = VQARobotGroundingDataset(
             meta_paths=config.training.robot_grounding_metas_path,
             text_tokenizer=text_tokenizer,
             showo_token_ids=showo_token_ids,
@@ -541,13 +556,33 @@ def main():
             num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
         )
         # 为 IterableDataset 设置分布式信息
-        if hasattr(robot_dataset, 'set_epoch'):
-            robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
+        if hasattr(vqa_grounding_robot_dataset, 'set_epoch'):
+            vqa_grounding_robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
             
-        train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
+        train_dataloader_vqa_robot_grounding = create_grounding_dataloader(vqa_grounding_robot_dataset,
                                                                 config.training.batch_size_robot_grounding,
-                                                                robot_dataset.collate_fn)
-        iti_robot_iter = iter(train_dataloader_robot_grounding)
+                                                                vqa_grounding_robot_dataset.collate_fn)
+        vqa_robot_grounding_iter = iter(train_dataloader_vqa_robot_grounding)
+
+        if config.training.get('use_visualized_grounding', False):
+            robot_dataset = RobotGroundingDataset(
+                meta_paths=config.training.robot_grounding_metas_path,
+                text_tokenizer=text_tokenizer,
+                showo_token_ids=showo_token_ids,
+                max_seq_len=preproc_config.max_vla_seq_len,
+                image_size=preproc_config.vla_image_size,
+                num_image_tokens=preproc_config.num_vla_image_tokens,
+                vis_mode=config.training.get('robot_grounding_vis_mode', 'combine'),
+                num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
+            )
+            # 为 IterableDataset 设置分布式信息
+            if hasattr(robot_dataset, 'set_epoch'):
+                robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
+                
+            train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
+                                                                    config.training.batch_size_robot_grounding,
+                                                                    robot_dataset.collate_fn)
+            iti_robot_iter = iter(train_dataloader_robot_grounding)
 
     if config.training.video_metas_paths:
         # Dataloader for Video Dataset (e.g., Something-Something-V2)
@@ -803,6 +838,25 @@ def main():
 
     model.train()
     for batch in mixed_loader:
+        vqa_grounding_batches = []
+        if vqa_grounding_iter is not None:
+            try:
+                vqa_grounding_batch = next(vqa_grounding_iter)
+            except StopIteration:
+                vqa_grounding_iter = iter(train_dataloader_vqa_grounding)
+                vqa_grounding_batch = next(vqa_grounding_iter)
+            vqa_grounding_batches.append(vqa_grounding_batch)
+        if vqa_robot_grounding_iter is not None:
+            try:
+                vqa_robot_grounding_batch = next(vqa_robot_grounding_iter)
+            except StopIteration:
+                # 在重新迭代时更新随机种子
+                if hasattr(vqa_robot_grounding_iter._dataset, 'set_epoch'):
+                    vqa_robot_grounding_iter._dataset.set_epoch(global_step + 1, accelerator.num_processes, accelerator.process_index)
+                vqa_robot_grounding_iter = iter(train_dataloader_vqa_robot_grounding)
+                vqa_robot_grounding_batch = next(vqa_robot_grounding_iter)
+            vqa_grounding_batches.append(vqa_robot_grounding_batch)
+
         grounding_batches = []
         if iti_iter is not None:
             try:
@@ -811,7 +865,6 @@ def main():
                 iti_iter = iter(train_dataloader_grounding)
                 iti_batch = next(iti_iter)
             grounding_batches.append(iti_batch)
-        
         if iti_robot_iter is not None:
             try:
                 iti_robot_batch = next(iti_robot_iter)
@@ -851,6 +904,25 @@ def main():
                                                                                             modality_positions)
             else:
                 raise NotImplementedError
+
+            if len(grounding_batches) > 0:
+                g_text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in grounding_batches], dim=0)
+                g_pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in grounding_batches], dim=0)
+                g_image_masks = torch.cat([gb['image_masks'].to(accelerator.device) for gb in grounding_batches], dim=0)
+                g_modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in grounding_batches], dim=0)
+
+                g_image_latents, g_t, g_image_labels, g_image_masks = prepare_latents_and_labels(
+                    g_pixel_values,
+                    g_image_masks,
+                    g_modality_positions
+                )
+
+                text_tokens = torch.cat([text_tokens, g_text_tokens], dim=0)
+                modality_positions = torch.cat([modality_positions, g_modality_positions], dim=0)
+                image_latents = torch.cat([image_latents, g_image_latents], dim=0)
+                t = torch.cat([t, g_t], dim=0)
+                image_masks = torch.cat([image_masks, g_image_masks], dim=0)
+                image_labels = torch.cat([image_labels, g_image_labels], dim=0)
             
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                                 text_tokens.size(1),
@@ -883,10 +955,10 @@ def main():
 
             loss_flow_m.update(loss_flow.item())
 
-            text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in grounding_batches], dim=0)
-            text_labels = torch.cat([gb['text_labels'].to(accelerator.device) for gb in grounding_batches], dim=0)
-            pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in grounding_batches], dim=0)
-            modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in grounding_batches], dim=0)
+            text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
+            text_labels = torch.cat([gb['text_labels'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
+            pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in vqa_grounding_batches], dim=0)
+            modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
 
             image_latents, t = prepare_latents_for_und(pixel_values)
 
