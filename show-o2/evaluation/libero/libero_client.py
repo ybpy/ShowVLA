@@ -59,6 +59,58 @@ LIBERO_DATASETS_HORIZON = {
     "libero130": 700,
 }
 
+# Used for getting the correct task instruction for LIBERO-plus Evaluation!
+LIBERO_TASKS = {
+    "libero_spatial": (
+        "pick up the black bowl between the plate and the ramekin and place it on the plate",
+        "pick up the black bowl next to the ramekin and place it on the plate",
+        "pick up the black bowl from table center and place it on the plate",
+        "pick up the black bowl on the cookie box and place it on the plate",
+        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+        "pick up the black bowl on the ramekin and place it on the plate",
+        "pick up the black bowl next to the cookie box and place it on the plate",
+        "pick up the black bowl on the stove and place it on the plate",
+        "pick up the black bowl next to the plate and place it on the plate",
+        "pick up the black bowl on the wooden cabinet and place it on the plate",
+    ),
+    "libero_object": (
+        "pick up the alphabet soup and place it in the basket",
+        "pick up the cream cheese and place it in the basket",
+        "pick up the salad dressing and place it in the basket",
+        "pick up the bbq sauce and place it in the basket",
+        "pick up the ketchup and place it in the basket",
+        "pick up the tomato sauce and place it in the basket",
+        "pick up the butter and place it in the basket",
+        "pick up the milk and place it in the basket",
+        "pick up the chocolate pudding and place it in the basket",
+        "pick up the orange juice and place it in the basket",
+    ),
+    "libero_goal": (
+        "open the middle drawer of the cabinet",
+        "put the bowl on the stove",
+        "put the wine bottle on top of the cabinet",
+        "open the top drawer and put the bowl inside",
+        "put the bowl on top of the cabinet",
+        "push the plate to the front of the stove",
+        "put the cream cheese in the bowl",
+        "turn on the stove",
+        "put the bowl on the plate",
+        "put the wine bottle on the rack",
+    ),
+    "libero_10": [
+        "put both the alphabet soup and the tomato sauce in the basket",
+        "put both the cream cheese box and the butter in the basket",
+        "turn on the stove and put the moka pot on it",
+        "put the black bowl in the bottom drawer of the cabinet and close it",
+        "put the white mug on the left plate and put the yellow and white mug on the right plate",
+        "pick up the book and place it in the back compartment of the caddy",
+        "put the white mug on the plate and put the chocolate pudding to the right of the plate",
+        "put both the alphabet soup and the cream cheese box in the basket",
+        "put both moka pots on the stove",
+        "put the yellow and white mug in the microwave and close it",
+    ]
+}
+
 benchmark_dict = benchmark.get_benchmark_dict()
 
 
@@ -96,7 +148,8 @@ def combine_main_wrist_views(main_img, wrist_img,
     else:
         comb_img[main_tgt_size[0]: , wrist_tgt_size[1]:] = wrist_img
 
-    return comb_img
+    return comb_img  # RGB
+    # return comb_img[:, :, ::-1] # BGR
 
 
 # -----------------------------------------------------------------------------
@@ -330,6 +383,13 @@ class LIBEROEval:
 
             lang_ = lang
             lang_ = lang_.replace('black bowl', 'gray bowl')
+            list_valid_inst = []
+            for task in LIBERO_TASKS[self.task_suite_name]:
+                task_ = task.replace('black bowl', 'gray bowl')
+                if lang_.startswith(task_):
+                    list_valid_inst.append(task_)
+            assert len(list_valid_inst) == 1, list_valid_inst
+            lang_ = list_valid_inst[0]
             action = policy.step(obs, lang_)
 
             images.append(_flip_agentview(obs['agentview_image']))
