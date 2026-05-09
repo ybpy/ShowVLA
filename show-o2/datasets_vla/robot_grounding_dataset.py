@@ -223,10 +223,21 @@ class RobotGroundingDataset(IterableDataset):
             return None
         bbox_xywh, rle_data, object_names = filtered
 
-        vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb, object_names)
-        # Generate instruction
         object_names_unique = list(set(object_names))
-        assert 1<= len(object_names_unique) <= 2, object_names_unique
+        assert 1 <= len(object_names_unique) <= 2, object_names_unique
+        if len(object_names_unique) > 1 and np.random.rand() < 0.5:
+            category = np.random.choice(object_names_unique)
+            bbox_xywh_of_category = []
+            rle_data_of_category = []
+            for bbox, rle, object_name in zip(bbox_xywh, rle_data, object_names):
+                if object_name == category:
+                    bbox_xywh_of_category.append(bbox)
+                    rle_data_of_category.append(rle)
+            bbox_xywh, rle_data = bbox_xywh_of_category, rle_data_of_category
+            object_names_unique = [category]
+
+        vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb)
+        # Generate instruction
         obj_str = ", ".join(object_names_unique)
         if task_mode == "bbox":
             text = f"Mark {obj_str} in the image with {color_name} bounding box:"
@@ -283,7 +294,7 @@ class RobotGroundingDataset(IterableDataset):
         names_out = [object_names[i] for i in keep]
         return bbox_out, rle_out, names_out
 
-    def _get_visualized_image(self, img_rgb, bbox_xywh, rle_list, mode, color_rgb, object_names=None):
+    def _get_visualized_image(self, img_rgb, bbox_xywh, rle_list, mode, color_rgb):
         img = img_rgb.copy()
         
         # Determine what to draw based on mode

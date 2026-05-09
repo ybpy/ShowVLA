@@ -54,8 +54,8 @@ DATA_DOMAIN_ID = {
     "libero_goal": 3,
     "libero_10": 3,
     "libero_90": 3,
-    "JAKA": 20,
-    "JAKA_clutter": 20,
+    "JAKA": 29,
+    "JAKA_clutter": 29,
     
     # ft
     "Bridge": 0,
