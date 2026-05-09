@@ -374,6 +374,17 @@ class LIBEROEval:
         env, lang, obs = self._init_env(task_suite, task_id, ep)
         images: List[np.ndarray] = []
 
+        lang_ = lang
+        lang_ = lang_.replace('black bowl', 'gray bowl')
+        list_valid_inst = []
+        for task in LIBERO_TASKS[self.task_suite_name]:
+            task_ = task.replace('black bowl', 'gray bowl')
+            if lang_.startswith(task_):
+                list_valid_inst.append(task_)
+        assert len(list_valid_inst) <= 1, list_valid_inst
+        if len(list_valid_inst) == 1:
+            lang_ = list_valid_inst[0]
+
         done_flag = False
         for _ in tqdm(range(self.eval_horizon), desc=f'{lang}'):
             robo_ori = self.processor.Mat_to_Rotate6D(env.env.robots[0].controller.ee_ori_mat)
@@ -381,15 +392,6 @@ class LIBEROEval:
             obs['robo_ori'] = robo_ori
             obs['robo_pos'] = robo_pos
 
-            lang_ = lang
-            lang_ = lang_.replace('black bowl', 'gray bowl')
-            list_valid_inst = []
-            for task in LIBERO_TASKS[self.task_suite_name]:
-                task_ = task.replace('black bowl', 'gray bowl')
-                if lang_.startswith(task_):
-                    list_valid_inst.append(task_)
-            assert len(list_valid_inst) == 1, list_valid_inst
-            lang_ = list_valid_inst[0]
             action = policy.step(obs, lang_)
 
             images.append(_flip_agentview(obs['agentview_image']))
