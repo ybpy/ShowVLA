@@ -464,7 +464,7 @@ def main():
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     xvla_loader = create_dataloader(
-        num_workers=dataset_config.num_workers,
+        num_workers=3, # dataset_config.num_workers
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
         num_actions=config.xvla.num_actions,
