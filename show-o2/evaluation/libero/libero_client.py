@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
@@ -125,6 +126,14 @@ def _ensure_dir(path: Path) -> None:
 def _flip_agentview(img: np.ndarray) -> np.ndarray:
     """Match original code behavior: vertical+horizontal flips."""
     return np.flip(np.flip(img, 0), 1)
+
+
+def _swap_task_instruction_left_right(text: str) -> str:
+    """Swap the phrases ``left`` and ``right`` in a task instruction string.
+    """
+    placeholder = "__LIBERO_TMP_WAS_LEFT__"
+    assert placeholder not in text, text
+    return text.replace("left", placeholder).replace("right", "left").replace(placeholder, "right")
 
 
 def combine_main_wrist_views(main_img, wrist_img,
@@ -376,39 +385,52 @@ class LIBEROEval:
 
         lang_ = lang
         lang_ = lang_.replace('black bowl', 'gray bowl')
+        lang_ = _swap_task_instruction_left_right(lang_)
         list_valid_inst = []
         for task in LIBERO_TASKS[self.task_suite_name]:
             task_ = task.replace('black bowl', 'gray bowl')
+            task_ = _swap_task_instruction_left_right(task_)
             if lang_.startswith(task_):
                 list_valid_inst.append(task_)
         assert len(list_valid_inst) <= 1, list_valid_inst
         if len(list_valid_inst) == 1:
             lang_ = list_valid_inst[0]
+        else:
+            print(f"[Special Task Instruction: {lang_}]\n")
 
-        done_flag = False
-        for _ in tqdm(range(self.eval_horizon), desc=f'{lang}'):
-            robo_ori = self.processor.Mat_to_Rotate6D(env.env.robots[0].controller.ee_ori_mat)
-            robo_pos = env.env.robots[0].controller.ee_pos
-            obs['robo_ori'] = robo_ori
-            obs['robo_pos'] = robo_pos
+        try:
+            done_flag = False
+            for _ in tqdm(range(self.eval_horizon), desc=f'{lang}'):
+                robo_ori = self.processor.Mat_to_Rotate6D(env.env.robots[0].controller.ee_ori_mat)
+                robo_pos = env.env.robots[0].controller.ee_pos
+                obs['robo_ori'] = robo_ori
+                obs['robo_pos'] = robo_pos
 
-            action = policy.step(obs, lang_)
+                action = policy.step(obs, lang_)
 
-            images.append(_flip_agentview(obs['agentview_image']))
-            obs, reward, done, info = env.step(action)
-            if done:
-                done_flag = True
-                break
+                images.append(_flip_agentview(obs['agentview_image']))
+                obs, reward, done, info = env.step(action)
+                if done:
+                    done_flag = True
+                    break
 
-        save_path = self.base_dir / f"{lang}_{ep}.mp4"
-        self._save_video(save_path, images, fps=30)
+            save_path = self.base_dir / f"{lang}_{ep}.mp4"
+            self._save_video(save_path, images, fps=30)
 
-        success = 1.0 if done_flag else 0.0
-        metrics = {f'sim/{self.task_suite_name}/{lang}': success}
-        self._log_results(metrics)
+            success = 1.0 if done_flag else 0.0
+            metrics = {f'sim/{self.task_suite_name}/{lang}': success}
+            self._log_results(metrics)
 
-        env.close()
-        return success
+            env.close()
+            return success
+        except Exception as e:
+            print(
+                f"[LIBERO rollout error] suite={self.task_suite_name} lang={lang!r} ep={ep}: {e!r}",
+                file=sys.stderr,
+            )
+            traceback.print_exc()
+            env.close()
+            return 0.0
 
     # ---- public API --------------------------------------------------------
     def eval_episodes(self, policy: ClientModel, save_path: Path) -> float:

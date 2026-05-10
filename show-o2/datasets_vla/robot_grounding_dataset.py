@@ -15,6 +15,13 @@ from datasets_vla.utils import BBOX_COLORS, MASK_COLORS
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 
+def _swap_task_instruction_left_right(text: str) -> str:
+    """Swap the phrases ``left`` and ``right`` in a task instruction string.
+    """
+    placeholder = "__LIBERO_TMP_WAS_LEFT__"
+    assert placeholder not in text, text
+    return text.replace("left", placeholder).replace("right", "left").replace(placeholder, "right")
+
 def decode_jpeg_object(obj):
     arr = np.asarray(obj, dtype=np.uint8).reshape(-1)
     img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -163,6 +170,7 @@ class RobotGroundingDataset(IterableDataset):
                     object_name = n.decode("utf-8") if isinstance(n, bytes) else str(n)
                     object_name = object_name.replace('_', ' ').strip()
                     object_name = object_name.replace('black bowl', 'gray bowl')
+                    object_name = _swap_task_instruction_left_right(object_name)
                     object_name = object_name.replace('top drawer of the wooden cabinet', 'top drawer')
                     object_name = object_name.replace('、', '')
                     if object_name.startswith('the ') or object_name.startswith('The '):

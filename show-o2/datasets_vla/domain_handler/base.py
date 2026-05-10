@@ -31,6 +31,14 @@ from scipy.interpolate import interp1d
 
 import copy
 
+def _swap_task_instruction_left_right(text: str) -> str:
+    """Swap the phrases ``left`` and ``right`` in a task instruction string.
+    """
+    placeholder = "__LIBERO_TMP_WAS_LEFT__"
+    assert placeholder not in text, text
+    return text.replace("left", placeholder).replace("right", "left").replace(placeholder, "right")
+
+
 class DomainHandler(ABC):
     """
     Minimal domain handler interface.
@@ -282,6 +290,7 @@ class BaseHDF5Handler(DomainHandler):
             ins = self.read_instruction(f)
             if 'libero' in self.meta["dataset_name"]:
                 ins = ins.replace('black bowl', 'gray bowl')
+                ins = _swap_task_instruction_left_right(ins)
 
             # Domain-specific kinematics and timing
             left, right, lt, rt, freq, qdur_max, qdur_min = self.build_left_right(f)
