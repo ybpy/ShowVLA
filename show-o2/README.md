@@ -59,12 +59,24 @@
 | :---: | :---: | :---: | :---: |
 | 94.4% | 99% | 96.8% | 94.4% |
 
+- showvla-future_act_weighted_grounding_jaka0430
+
 20260504 weighted LIBERO + JAKA + JAKA-moveto, grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
-|  | Spatial | Object | Goal | Long |
-| :---: | :---: | :---: | :---: | :---: |
-| 18000 | 94.4 | 99.6 | 98.4 | 94.2 |
-| 19000 | 93 | 98.2 | 99 | 94.2 |
-| 20000 | 94.6 | 99.8 | 95 | 95.4 |
+|       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
+| :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
+| 18000 | 94.4    | 99.6   | 98.4  | 94.2  | 96.7  |             |     |    |   |   |   |
+| 19000 | 93.0    | 98.2   | 99.0  | 94.2  | 96.1  |             |     |    |   |   |   |
+| 20000 | 94.6    | 99.8   | 95.0  | 95.4  | 96.2  |             |     |    |   |   |   |
+
+- showvla-future_act_weighted_VQAgrounding_jaka0503
+
+20260508 weighted LIBERO + JAKA + JAKA-moveto, VQA grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+|       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
+| :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
+| 18000 | 95.6    | 98.6   | 98.0  | 93.0  | 96.3  |             |     |    |   |   |   |
+| 19000 | 96.0    | 99.2   | 98.8  | 94.8  | 97.2  |             |     | 68.7  | 68.0  |   |   |
+| 20000 | 96.8    | 99.8   | 99.2  | 92.0  | 97.0  |             |     | 67.8  |   |   |   |
+
 
 # Data
 ## COCO Data
