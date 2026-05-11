@@ -596,6 +596,7 @@ def main():
             image_size=preproc_config.vla_image_size,
             num_image_tokens=preproc_config.num_vla_image_tokens,
             training=True,
+            num_future_imgs=num_future_imgs,
         )
         loader_list.append(train_dataloader_video)
     

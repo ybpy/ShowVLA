@@ -25,8 +25,12 @@ class SSv2Dataset(IterableDataset):
             image_size,
             num_image_tokens,
             training=True,
-            qdur=1.0,
+            qdur=0.5,
+            num_future_imgs: int = 1,
     ) -> None:
+        if num_future_imgs < 1:
+            raise ValueError(f"num_future_imgs must be >= 1, got {num_future_imgs}")
+        self.num_future_imgs = num_future_imgs
         self.all_samples = []
         
         if isinstance(metas_paths, str):
@@ -171,11 +175,21 @@ class SSv2Dataset(IterableDataset):
             
             assert idx1 < idx2
 
-            img1 = self.image_transform(frames[idx1])
-            img2 = self.image_transform(frames[idx2])
-            image = torch.stack([img1, img2], dim=0)
+            # Evenly spaced future frame indices in [idx1, idx2], excluding the observation idx1
+            # (same scheme as BaseHDF5Handler.iter_episode).
+            future_indices = np.linspace(idx1, idx2, self.num_future_imgs + 1, dtype=int).tolist()[1:]
 
-            text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(text)
+            img_obs = self.image_transform(frames[idx1])
+            img_futures = [self.image_transform(frames[j]) for j in future_indices]
+            image = torch.stack([img_obs] + img_futures, dim=0)
+
+            if self.num_future_imgs == 1:
+                prompt_suffix = " Future image:"
+            else:
+                prompt_suffix = " Future video:"
+
+            text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(
+                text, suffix=prompt_suffix)
 
             yield {
                 'language_instruction': text,
@@ -216,9 +230,12 @@ def create_video_dataset_loader(
     image_size,
     num_image_tokens,
     training,
+    qdur=0.5,
+    num_future_imgs=1,
 ):
     video_dataset = SSv2Dataset(metas_paths, text_tokenizer=text_tokenizer, showo_token_ids=showo_token_ids,
-        max_seq_len=max_seq_len, image_size=image_size, num_image_tokens=num_image_tokens, training=training)
+        max_seq_len=max_seq_len, image_size=image_size, num_image_tokens=num_image_tokens, training=training,
+        qdur=qdur, num_future_imgs=num_future_imgs)
     return DataLoader(
         video_dataset, 
         batch_size=batch_size,
@@ -231,6 +248,7 @@ def create_video_dataset_loader(
 
 
 if __name__ == '__main__':
+    import imageio
     from torch.utils.data import DataLoader
     from models.misc import get_text_tokenizer
     from torchvision.utils import save_image
@@ -252,9 +270,11 @@ if __name__ == '__main__':
         image_size=(336, 320),
         num_image_tokens=420+1,
         training=True,
+        qdur=0.5,
+        num_future_imgs=4,
     )
 
-    output_dir = "vis_ssv2_"
+    output_dir = "vis_ssv2_video"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving visualizations to {output_dir}...")
 
@@ -264,22 +284,29 @@ if __name__ == '__main__':
             break
         print(f"[BATCH {i}]")
         
-        images = data['images'] # [B, 2, C, H, W]
+        images = data['images']  # [B, 1 + num_future_imgs, C, H, W]
         texts = data['language_instruction']
 
         for j in range(images.shape[0]):
-            img1 = images[j, 0]
-            img2 = images[j, 1]
-            # Concat horizontally: [C, H, W1+W2]
-            combined = torch.cat([img1, img2], dim=2)
-            # Denormalize
-            combined = combined * 0.5 + 0.5
-            
-            # Clean up text for filename
+            seq = [images[j, k] for k in range(images.shape[1])]
+            denorm = [t * 0.5 + 0.5 for t in seq]
+
             clean_text = texts[j].replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "")
-            filename = f"sample_{sample_count}_{clean_text}.jpg"
-            save_path = os.path.join(output_dir, filename)
-            
-            save_image(combined, save_path)
+
+            if images.shape[1] > 2:
+                frames_np = []
+                for t in denorm:
+                    t = t.clamp(0, 1)
+                    arr = (t.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+                    frames_np.append(arr)
+                filename = f"sample_{sample_count}_{clean_text}.mp4"
+                save_path = os.path.join(output_dir, filename)
+                imageio.mimsave(save_path, frames_np, fps=8)
+            else:
+                combined = torch.cat(denorm, dim=2)
+                filename = f"sample_{sample_count}_{clean_text}.jpg"
+                save_path = os.path.join(output_dir, filename)
+                save_image(combined, save_path)
+
             print(f"  - Saved: {filename}")
             sample_count += 1
