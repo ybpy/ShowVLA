@@ -64,18 +64,46 @@
 20260504 weighted LIBERO + JAKA + JAKA-moveto, grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
 |       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
 | :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
-| 18000 | 94.4    | 99.6   | 98.4  | 94.2  | 96.7  |             |     |    |   |   |   |
+| 18000 | 94.4    | 99.6   | 98.4  | 94.2  | 96.7  |             | 77.0    | 68.0   | 70.6  | 66.3  | 70.5  |
 | 19000 | 93.0    | 98.2   | 99.0  | 94.2  | 96.1  |             |     |    |   |   |   |
 | 20000 | 94.6    | 99.8   | 95.0  | 95.4  | 96.2  |             |     |    |   |   |   |
 
 - showvla-future_act_weighted_VQAgrounding_jaka0503
 
-20260508 weighted LIBERO + JAKA + JAKA-moveto, VQA grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+20260508 weighted LIBERO + JAKA + JAKA-moveto, VQA grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter (small batch)
 |       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
 | :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
 | 18000 | 95.6    | 98.6   | 98.0  | 93.0  | 96.3  |             |     |    |   |   |   |
-| 19000 | 96.0    | 99.2   | 98.8  | 94.8  | 97.2  |             |     | 68.7  | 68.0  |   |   |
-| 20000 | 96.8    | 99.8   | 99.2  | 92.0  | 97.0  |             |     | 67.8  |   |   |   |
+| 19000 | 96.0    | 99.2   | 98.8  | 94.8  | 97.2  |             | 75.8    | 68.7   | 68.0  | 68.8  | 70.3  |
+| 20000 | 96.8    | 99.8   | 99.2  | 92.0  | 97.0  |             |     |    |   |   |   |
+
+- showvla-future_act_weighted_VQAgrounding_jaka0506
+
+20260514 weighted LIBERO + JAKA + JAKA-moveto, VQA grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+|       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
+| :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
+| 18000 | 89.2    | 98.6   | 98.4  | 92.4  | 94.7  |             | 68.0    | 56.3   | 66.6  | 66.9  | 64.5  |
+| 19000 | 90.6    | 99.8   | 98.8  | 95.4  | 96.2  |             | 69.4    | 57.7   | 68.1  | 65.7  | 65.2  |
+| 20000 | 94.0    | 99.6   | 98.4  | 92.4  | 96.1  |             | 68.9    | 58.4   | 68.2  | 60.7  | 64.1  |
+
+
+- showvla-future_act_weighted_COMBgrounding_jaka
+
+20260524 weighted LIBERO + JAKA + JAKA-moveto, Combined grounding LIBERO-Spatial, LIBERO-90, JAKA-clutter
+|       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
+| :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
+| 18000 | 96.8    | 95.2   | 95.0  | 85.2  | 93.1  |             |     |    |   |   |   |
+| 19000 | 92.4    | 95.8   | 97.2  | 95.2  | 95.2  |             |     |    |   |   |   |
+| 20000 | 89.2    | 98.8   | 97.6  | 75.0  | 90.2  |             |     |    |   |   |   |
+
+- showvla-future_act_weighted_jaka0522
+
+20260526 weighted LIBERO + JAKA + JAKA-moveto
+|       | Spatial | Object | Goal  | Long  | AVG.  | LIBERO-plus | Spatial | Object | Goal  | Long  | AVG.  |
+| :---: | :---:   | :---:  | :---: | :---: | :---: | :---:       | :---:   | :---:  | :---: | :---: | :---: |
+| 18000 | 89.4    | 98.2   | 95.6  | 82.0  | 91.3  |             |     |    |   |   |   |
+| 19000 | 86.4    | 97.2   | 93.6  | 79.0  | 89.0  |             |     |    |   |   |   |
+| 20000 | 91.6    | 88.8   | 92.2  | 75.4  | 87.0  |             |     |    |   |   |   |
 
 
 # Data
