@@ -11,17 +11,25 @@
 #     --crop_main "(40, -140, 300, -300)" \
 #     --overwrite
 
-python convert_jaka.py \
-    --data_dir /home/hyx/JAKA_data/clutter_put \
-    --output_dir /home/hyx/datasets/JAKA/clutter_put \
-    --meta_prefix JAKA \
-    --speed_up 1 \
-    --image_stream_offset 1 \
-    --crop_main "(180, -60, 0, -300)"
+# python convert_jaka.py \
+#     --data_dir /home/hyx/JAKA_data/clutter_put \
+#     --output_dir /home/hyx/datasets/JAKA/clutter_put \
+#     --meta_prefix JAKA \
+#     --speed_up 1 \
+#     --image_stream_offset 1 \
+#     --crop_main "(180, -60, 0, -300)"
+
+# python convert_jaka.py \
+#     --data_dir /home/hyx/JAKA_data/clutter_put2 \
+#     --output_dir /home/hyx/datasets/JAKA/clutter_put2 \
+#     --meta_prefix JAKA \
+#     --speed_up 1 \
+#     --image_stream_offset 1 \
+#     --crop_main "(180, -60, 0, -300)"
 
 python convert_jaka.py \
-    --data_dir /home/hyx/JAKA_data/clutter_put2 \
-    --output_dir /home/hyx/datasets/JAKA/clutter_put2 \
+    --data_dir /home/hyx/JAKA_data/clutter_put3 \
+    --output_dir /home/hyx/datasets/JAKA/clutter_put3 \
     --meta_prefix JAKA \
     --speed_up 1 \
     --image_stream_offset 1 \

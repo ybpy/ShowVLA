@@ -42,7 +42,8 @@ class DroidHandler(BaseHDF5Handler):
         self, f: h5py.File
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
         # Data rate ~15Hz, use 4s future window to match your original code.
-        freq, qdur = 15.0, 4.0
+        # freq, qdur = 15.0, 4.0
+        freq, qdur_max, qdur_min = 30.0, 1.5, 0.75
 
         cart = f["observation"]["cartesian_position"][()]   # [T,6] (xyz + euler_xyz)
         grip = f["observation"]["gripper_position"][()]     # [T,1] or [T]
@@ -57,7 +58,7 @@ class DroidHandler(BaseHDF5Handler):
         right = np.zeros_like(left)
 
         # Use uniform time by freq (return None to let base class construct it).
-        return left, right, None, None, freq, qdur
+        return left, right, None, None, freq, qdur_max, qdur_min
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         # Leave margin for future window (~30 frames at 15Hz ≈ 2s); match your prior -30.

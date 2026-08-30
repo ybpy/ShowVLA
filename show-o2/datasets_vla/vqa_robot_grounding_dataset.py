@@ -77,8 +77,7 @@ class VQARobotGroundingDataset(IterableDataset):
         self.num_processes = 1
         self.process_index = 0
 
-    def set_epoch(self, epoch: int, num_processes: int = 1, process_index: int = 0):
-        self.epoch = epoch
+    def set_process_info(self, num_processes: int = 1, process_index: int = 0):
         self.num_processes = num_processes
         self.process_index = process_index
 
@@ -126,7 +125,6 @@ class VQARobotGroundingDataset(IterableDataset):
 
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
-        modality_positions = torch.tensor(modality_positions)
 
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -205,6 +203,9 @@ class VQARobotGroundingDataset(IterableDataset):
                 if sample is not None:
                     yield sample
 
+        # 每跑完一轮分片后自增，下一轮 __iter__ 使用新 seed（各 DataLoader worker 进程内各自维护）
+        self.epoch = self.epoch + 1
+
     def _process_sample(self, img_jpeg_bytes, bbox_xywh, rle_data, object_names):
         # Data decoding and processing
         img_rgb = decode_jpeg_object(img_jpeg_bytes)
@@ -277,7 +278,7 @@ class VQARobotGroundingDataset(IterableDataset):
             for key, value in data.items():
                 batched[key].append(value)
         for key, value in batched.items():
-            if key not in ('language_instruction',):
+            if key not in ('language_instruction', 'modality_positions', 'action_positions'):
                 batched[key] = torch.stack(value, dim=0)
         return batched
 
@@ -287,7 +288,7 @@ if __name__ == '__main__':
     from models.misc import get_text_tokenizer
 
     text_tokenizer, showo_token_ids = get_text_tokenizer(
-        "Qwen/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",
         add_showo_tokens=True,
         return_showo_token_ids=True,
         llm_name="qwen2_5"

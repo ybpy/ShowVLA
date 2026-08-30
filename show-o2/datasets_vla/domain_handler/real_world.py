@@ -155,14 +155,14 @@ class JAKAHandler(BaseHDF5Handler):
     HDF5:
       /language_instruction [T]
       /rgb_comb [T,H,W,3]
-      /eef_xyz_rotate6d_grip [T,10]
+      /eef_xyz_rotate6d_grip [T,20] = L(10)+R(10)
     """
     dataset_name = "JAKA"
 
     def build_left_right(
         self, f: h5py.File
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
-        freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
+        freq, qdur_max, qdur_min = 10.0, 1.0, 0.5
         eef = f["eef_xyz_rotate6d_grip"][()]  # [T,10]
         left = eef[:, :10]
         right = eef[:, 10:]
@@ -171,6 +171,43 @@ class JAKAHandler(BaseHDF5Handler):
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         # return range(0, max(0, T_left - 10))
         candidates = list(range(0, max(0, T_left - 10)))
-        downsample_rate = max(1, T_left // 100)
-        n_keep = min(len(candidates), max(1, len(candidates) // downsample_rate))
-        return random.sample(candidates, n_keep)
+        n_keep = T_left // 3
+        return np.random.choice(candidates, size=n_keep, replace=False)
+
+class LumiHandler(BaseHDF5Handler):
+    """
+    Lumi-mobile.
+    HDF5:
+      /language_instruction [T]
+      /rgb_comb [T,H,W,3]
+      /eef_xyz_rotate6d_grip [T,10]
+      /agv_linear_velocity [T,1]   # forward speed v
+      /agv_angular_velocity [T,1]  # yaw rate
+    build_mobile returns [T,3] = (vx, vy, angular) with vy=0 for non-holonomic Lumi.
+    """
+    dataset_name = "Lumi-mobile"
+
+    def build_left_right(
+        self, f: h5py.File
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
+        # Lumi raw episodes are recorded at 20 Hz (see convert_lumi / data.json "frequency").
+        freq, qdur_max, qdur_min = 20.0, 1.0, 0.5
+        eef = f["eef_xyz_rotate6d_grip"][()]  # [T,10]
+        right = eef[:, :10]
+        left = np.zeros_like(right)
+        return left, right, None, None, freq, qdur_max, qdur_min
+
+    def build_mobile(
+        self, f: h5py.File
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        # Storage is 1D linear + 1D angular; expand to 3-DoF (vx, vy, angular) with vy=0.
+        linear = np.asarray(f["agv_linear_velocity"][()], dtype=np.float64)
+        zeros = np.zeros_like(linear)
+        angular = np.asarray(f["agv_angular_velocity"][()], dtype=np.float64)
+        return np.concatenate([linear, zeros, angular], axis=-1), np.array([True, False, True])  # [T,3], [3]
+
+    def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
+        # return range(0, max(0, T_left - 10))
+        candidates = list(range(0, max(0, T_left - 10)))
+        n_keep = T_left // 2
+        return np.random.choice(candidates, size=n_keep, replace=False)

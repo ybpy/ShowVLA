@@ -66,7 +66,10 @@ def main():
             raise NotImplementedError
 
         # Initialize Show-o model
-        pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
+        pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False
+        pred_mobile_act = config.model.showo.get('pred_mobile_act', False)
+        if pred_mobile_act:
+            assert pred_act, "pred_mobile_act=True requires pred_act=True"
         text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                             return_showo_token_ids=True,
                                                             llm_name=path_to_llm_name[config.model.showo.llm_model_path],
@@ -144,6 +147,9 @@ def main():
                     "action_decoder",
                     "soft_prompt_hub",
                 ]
+                if pred_mobile_act:
+                    modules_to_save.append("mobile_norm")
+                    modules_to_save.append("mobile_decoder")
             for name, module in model.named_modules():
                 if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
                     continue

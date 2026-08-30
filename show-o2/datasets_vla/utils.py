@@ -94,39 +94,6 @@ def get_bboxes_text(img_w, img_h, bbox_xywh):
     ]
     return ' '.join(bboxes_text)
 
-def try_get_img_with_bbox(img, instances, color):
-    img = np.array(img)
-    img_h, img_w, c = img.shape
-    
-    bboxes = []
-    for ann in instances:
-        if ann["iscrowd"]:
-            return None
-        segm = ann["segmentation"]
-        assert type(segm) == list
-        if len(segm) > 1:
-            return None
-        
-        bbox = ann["bbox"]
-        bboxes.append(bbox)
-    
-    if len(bboxes) > 8:
-        return None
-
-    # draw all the bboxes on the image with the color
-    for bbox in bboxes:
-        x, y, w, h = bbox
-        x1, y1, x2, y2 = int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))
-        if w < 6:
-            x1 = max(0, x1-3)
-            x2 = min(img_w-1, x2+3)
-        if h < 6:
-            y1 = max(0, y1-3)
-            y2 = min(img_h-1, y2+3)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-    
-    return Image.fromarray(img)
-
 def get_img_with_segment_mask(img, h, w, instances, color, mask_color_weight=0.5):
     img = np.array(img)
     comb_mask = None

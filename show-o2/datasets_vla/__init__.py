@@ -41,7 +41,7 @@ def collate_fn(batch):
         for key, value in data.items():
             batched[key].append(value)
     for key, value in batched.items():
-        if key not in ('language_instruction',):
+        if key not in ('language_instruction', 'modality_positions', 'action_positions'):
             batched[key] = torch.stack(value, dim=0)
     return batched
 

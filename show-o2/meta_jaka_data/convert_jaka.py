@@ -23,7 +23,7 @@ def encode_frames_to_jpeg_bytes(frames):
         pil_image = Image.fromarray(frame)
         # Encode to JPEG bytes
         buffer = BytesIO()
-        pil_image.save(buffer, format='JPEG', quality=100)
+        pil_image.save(buffer, format='JPEG')
         encoded[idx] = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
     return encoded
 

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import os
 import json
 import logging
@@ -56,7 +57,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets_vla import MixedDataLoader, VQAGroundingDataset, VQARobotGroundingDataset, GroundingDataset, RobotGroundingDataset
+from datasets_vla import MixedDataLoader, VQAGroundingDataset, VQARobotGroundingDataset, GroundingDataset, RobotGroundingDataset, EO_VQADataset
 from datasets_vla import create_dataloader, create_video_dataset_loader
 from utils import get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
     path_to_llm_name, _freeze_params, load_xvla_modules, replace_model_parameters, remove_trailing_digits, set_seed
@@ -203,6 +204,14 @@ def main():
     else:
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
 
+    if accelerator.is_main_process:
+        try:
+            model_cfg = model.config.to_dict() if hasattr(model.config, "to_dict") else dict(model.config)
+            logger.info("Effective model.config loaded by model:")
+            logger.info(json.dumps(model_cfg, ensure_ascii=False, indent=2, default=str))
+        except Exception:
+            logger.info(f"Effective model.config loaded by model: {model.config}")
+
     # Drop-upcycling if needed
     drop_upcycling = config.model.showo.get('drop_upcycling', False)
     if drop_upcycling:
@@ -244,10 +253,8 @@ def main():
             source_prefix=config.model.showo.get('source_prefix', 'transformer'),
             target_prefix=config.model.showo.get('target_prefix', None),
         )
-        if not success:
-            logger.error("Failed to load XVLA modules! Please check:")
-        else:
-            logger.info("XVLA action modules loaded successfully!")
+        assert success, "Failed to load XVLA modules! Please check:"
+        logger.info("XVLA action modules loaded successfully!")
 
     use_lora = config.training.get('use_lora', False)
     lr_multipler = config.training.get('lr_multipler', 1.0) if use_lora else 1.0
@@ -464,7 +471,7 @@ def main():
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     xvla_loader = create_dataloader(
-        num_workers=3, # dataset_config.num_workers
+        num_workers=4, # dataset_config.num_workers
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
         num_actions=config.xvla.num_actions,
@@ -481,6 +488,8 @@ def main():
         given_freq=given_freq,
     )
     loader_list = [xvla_loader]
+    vqa_loader_list = []
+    iti_grounding_loader_list = []
 
     def create_grounding_dataloader(dataset, batch_size, collate_fn):
         if isinstance(dataset, IterableDataset):
@@ -513,23 +522,20 @@ def main():
                                             persistent_workers=True)
         return dataloader
 
-    vqa_grounding_iter = None
-    vqa_robot_grounding_iter = None
-    iti_iter = None
-    iti_robot_iter = None
     if config.training.grounding_metas_path:
-        vqa_grounding_dataset = VQAGroundingDataset(
-            metas_path=config.training.grounding_metas_path,
-            text_tokenizer=text_tokenizer,
-            showo_token_ids=showo_token_ids,
-            max_seq_len=preproc_config.max_vla_seq_len,
-            image_size=preproc_config.vla_image_size,
-            num_image_tokens=preproc_config.num_vla_image_tokens,
-        )
-        train_dataloader_vqa_grounding = create_grounding_dataloader(vqa_grounding_dataset,
-                                                        config.training.batch_size_grounding,
-                                                        vqa_grounding_dataset.collate_fn)
-        vqa_grounding_iter = iter(train_dataloader_vqa_grounding)
+        if config.training.get('use_vqa_grounding', False):
+            vqa_grounding_dataset = VQAGroundingDataset(
+                metas_path=config.training.grounding_metas_path,
+                text_tokenizer=text_tokenizer,
+                showo_token_ids=showo_token_ids,
+                max_seq_len=preproc_config.max_vla_seq_len,
+                image_size=preproc_config.vla_image_size,
+                num_image_tokens=preproc_config.num_vla_image_tokens,
+            )
+            train_dataloader_vqa_grounding = create_grounding_dataloader(vqa_grounding_dataset,
+                                                            config.training.batch_size_grounding,
+                                                            vqa_grounding_dataset.collate_fn)
+            vqa_loader_list.append(train_dataloader_vqa_grounding)
 
         if config.training.get('use_visualized_grounding', False):
             dataset = GroundingDataset(
@@ -543,26 +549,26 @@ def main():
             train_dataloader_grounding = create_grounding_dataloader(dataset,
                                                             config.training.batch_size_grounding,
                                                             dataset.collate_fn)
-            iti_iter = iter(train_dataloader_grounding)
+            iti_grounding_loader_list.append(train_dataloader_grounding)
 
     if config.training.get('robot_grounding_metas_path', None):
-        vqa_grounding_robot_dataset = VQARobotGroundingDataset(
-            meta_paths=config.training.robot_grounding_metas_path,
-            text_tokenizer=text_tokenizer,
-            showo_token_ids=showo_token_ids,
-            max_seq_len=preproc_config.max_vla_seq_len,
-            image_size=preproc_config.vla_image_size,
-            num_image_tokens=preproc_config.num_vla_image_tokens,
-            num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
-        )
-        # 为 IterableDataset 设置分布式信息
-        if hasattr(vqa_grounding_robot_dataset, 'set_epoch'):
-            vqa_grounding_robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
-            
-        train_dataloader_vqa_robot_grounding = create_grounding_dataloader(vqa_grounding_robot_dataset,
-                                                                config.training.batch_size_robot_grounding,
-                                                                vqa_grounding_robot_dataset.collate_fn)
-        vqa_robot_grounding_iter = iter(train_dataloader_vqa_robot_grounding)
+        if config.training.get('use_vqa_grounding', False):
+            vqa_grounding_robot_dataset = VQARobotGroundingDataset(
+                meta_paths=config.training.robot_grounding_metas_path,
+                text_tokenizer=text_tokenizer,
+                showo_token_ids=showo_token_ids,
+                max_seq_len=preproc_config.max_vla_seq_len,
+                image_size=preproc_config.vla_image_size,
+                num_image_tokens=preproc_config.num_vla_image_tokens,
+                num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
+            )
+            # 为 IterableDataset 设置分布式信息
+            vqa_grounding_robot_dataset.set_process_info(accelerator.num_processes, accelerator.process_index)
+
+            train_dataloader_vqa_robot_grounding = create_grounding_dataloader(vqa_grounding_robot_dataset,
+                                                                    config.training.batch_size_robot_grounding,
+                                                                    vqa_grounding_robot_dataset.collate_fn)
+            vqa_loader_list.append(train_dataloader_vqa_robot_grounding)
 
         if config.training.get('use_visualized_grounding', False):
             robot_dataset = RobotGroundingDataset(
@@ -576,13 +582,12 @@ def main():
                 num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
             )
             # 为 IterableDataset 设置分布式信息
-            if hasattr(robot_dataset, 'set_epoch'):
-                robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
-                
+            robot_dataset.set_process_info(accelerator.num_processes, accelerator.process_index)
+
             train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
                                                                     config.training.batch_size_robot_grounding,
                                                                     robot_dataset.collate_fn)
-            iti_robot_iter = iter(train_dataloader_robot_grounding)
+            iti_grounding_loader_list.append(train_dataloader_robot_grounding)
 
     if config.training.video_metas_paths:
         # Dataloader for Video Dataset (e.g., Something-Something-V2)
@@ -599,13 +604,47 @@ def main():
             num_future_imgs=num_future_imgs,
         )
         loader_list.append(train_dataloader_video)
-    
-    
+
+    # Optional EO-Data1.5M VQA (disabled unless use_eo_vqa=True). Shares the NTP
+    # path with VQA-grounding via vqa_loader_list / vqa_mixed.
+    if config.training.get('use_eo_vqa', False):
+        eo_subsets = config.training.get('eo_subsets', None)
+        batch_size_vqa = config.training.get('batch_size_vqa', None)
+        assert eo_subsets, "use_eo_vqa=True requires training.eo_subsets"
+        assert batch_size_vqa, "use_eo_vqa=True requires training.batch_size_vqa"
+        eo_vqa_dataset = EO_VQADataset(
+            eo_subsets=eo_subsets,
+            text_tokenizer=text_tokenizer,
+            showo_token_ids=showo_token_ids,
+            max_seq_len=config.training.get('eo_vqa_max_seq_len', 560),
+            image_size=preproc_config.vla_image_size,
+            num_image_tokens=preproc_config.num_vla_image_tokens,
+            training=True,
+        )
+        train_dataloader_eo_vqa = create_grounding_dataloader(
+            eo_vqa_dataset,
+            batch_size_vqa,
+            eo_vqa_dataset.collate_fn,
+        )
+        vqa_loader_list.append(train_dataloader_eo_vqa)
+        logger.info(f"Enabled EO VQA with subsets={eo_subsets}, batch_size_vqa={batch_size_vqa}")
+
+    vqa_mixed = None
+    if vqa_loader_list:
+        vqa_mixed = MixedDataLoader(
+            loader_list=vqa_loader_list,
+            mode='concat_max_size_cycle',
+        )
+    grounding_mixed = None
+    if iti_grounding_loader_list:
+        grounding_mixed = MixedDataLoader(
+            loader_list=iti_grounding_loader_list,
+            mode='concat_max_size_cycle',
+        )
+
     # Combine these dataloaders into a single iterable
     mixed_loader = MixedDataLoader(
         loader_list=loader_list,
-        samp_probs=config.dataset.samp_probs,
-        accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
     )
 
@@ -749,7 +788,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -819,7 +858,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -837,46 +876,11 @@ def main():
     loss_ntp_m = AverageMeter()
     loss_action_m = AverageMeter()
 
+    vqa_mixed_iter = iter(vqa_mixed) if vqa_mixed is not None else None
+    grounding_mixed_iter = iter(grounding_mixed) if grounding_mixed is not None else None
+
     model.train()
     for batch in mixed_loader:
-        vqa_grounding_batches = []
-        if vqa_grounding_iter is not None:
-            try:
-                vqa_grounding_batch = next(vqa_grounding_iter)
-            except StopIteration:
-                vqa_grounding_iter = iter(train_dataloader_vqa_grounding)
-                vqa_grounding_batch = next(vqa_grounding_iter)
-            vqa_grounding_batches.append(vqa_grounding_batch)
-        if vqa_robot_grounding_iter is not None:
-            try:
-                vqa_robot_grounding_batch = next(vqa_robot_grounding_iter)
-            except StopIteration:
-                # 在重新迭代时更新随机种子
-                if hasattr(vqa_robot_grounding_iter._dataset, 'set_epoch'):
-                    vqa_robot_grounding_iter._dataset.set_epoch(global_step + 1, accelerator.num_processes, accelerator.process_index)
-                vqa_robot_grounding_iter = iter(train_dataloader_vqa_robot_grounding)
-                vqa_robot_grounding_batch = next(vqa_robot_grounding_iter)
-            vqa_grounding_batches.append(vqa_robot_grounding_batch)
-
-        grounding_batches = []
-        if iti_iter is not None:
-            try:
-                iti_batch = next(iti_iter)
-            except StopIteration:
-                iti_iter = iter(train_dataloader_grounding)
-                iti_batch = next(iti_iter)
-            grounding_batches.append(iti_batch)
-        if iti_robot_iter is not None:
-            try:
-                iti_robot_batch = next(iti_robot_iter)
-            except StopIteration:
-                # 在重新迭代时更新随机种子
-                if hasattr(iti_robot_iter._dataset, 'set_epoch'):
-                    iti_robot_iter._dataset.set_epoch(global_step + 1, accelerator.num_processes, accelerator.process_index)
-                iti_robot_iter = iter(train_dataloader_robot_grounding)
-                iti_robot_batch = next(iti_robot_iter)
-            grounding_batches.append(iti_robot_batch)
-        
         with accelerator.accumulate(model):
             # print(f"batch['language_instruction']: {batch['language_instruction']}")
             text_tokens = batch['text_tokens'].to(accelerator.device)
@@ -885,11 +889,11 @@ def main():
             pixel_values = batch['images'].to(accelerator.device).to(weight_type)
 
             image_masks = batch['image_masks'].to(accelerator.device)
-            modality_positions = batch['modality_positions'].to(accelerator.device)
+            modality_positions = batch['modality_positions']
             if pred_act:
                 actions = batch['action'].to(accelerator.device).to(weight_type)
                 proprio = batch['proprio'].to(accelerator.device).to(weight_type)
-                action_positions = batch['action_positions'].to(accelerator.device)
+                action_positions = batch['action_positions']
                 domain_id = batch['domain_id'].to(accelerator.device)
                 action_labels = actions.clone().to(accelerator.device)
                 t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
@@ -906,12 +910,12 @@ def main():
             else:
                 raise NotImplementedError
 
-            if len(grounding_batches) > 0:
-                g_text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in grounding_batches], dim=0)
-                g_pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in grounding_batches], dim=0)
-                g_image_masks = torch.cat([gb['image_masks'].to(accelerator.device) for gb in grounding_batches], dim=0)
-                g_modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in grounding_batches], dim=0)
-
+            if grounding_mixed_iter is not None:
+                gb_merged = next(grounding_mixed_iter)
+                g_text_tokens = gb_merged['text_tokens'].to(accelerator.device)
+                g_pixel_values = gb_merged['images'].to(accelerator.device).to(weight_type)
+                g_image_masks = gb_merged['image_masks'].to(accelerator.device)
+                g_modality_positions = gb_merged['modality_positions']
                 g_image_latents, g_t, g_image_labels, g_image_masks = prepare_latents_and_labels(
                     g_pixel_values,
                     g_image_masks,
@@ -919,7 +923,7 @@ def main():
                 )
 
                 text_tokens = torch.cat([text_tokens, g_text_tokens], dim=0)
-                modality_positions = torch.cat([modality_positions, g_modality_positions], dim=0)
+                modality_positions = modality_positions + g_modality_positions
                 image_latents = torch.cat([image_latents, g_image_latents], dim=0)
                 t = torch.cat([t, g_t], dim=0)
                 image_masks = torch.cat([image_masks, g_image_masks], dim=0)
@@ -956,33 +960,37 @@ def main():
 
             loss_flow_m.update(loss_flow.item())
 
-            text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
-            text_labels = torch.cat([gb['text_labels'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
-            pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in vqa_grounding_batches], dim=0)
-            modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in vqa_grounding_batches], dim=0)
+            if vqa_mixed_iter is not None:
+                vqa_gb = next(vqa_mixed_iter)
+                text_tokens = vqa_gb['text_tokens'].to(accelerator.device)
+                text_labels = vqa_gb['text_labels'].to(accelerator.device)
+                pixel_values = vqa_gb['images'].to(accelerator.device).to(weight_type)
+                modality_positions = vqa_gb['modality_positions']
 
-            image_latents, t = prepare_latents_for_und(pixel_values)
+                image_latents, t = prepare_latents_for_und(pixel_values)
 
-            vqa_block_mask = omni_attn_mask_naive(text_tokens.size(0),
-                                                text_tokens.size(1),
-                                                modality_positions,
-                                                accelerator.device,
-                                                ).to(weight_type)
+                vqa_block_mask = omni_attn_mask_naive(text_tokens.size(0),
+                                                    text_tokens.size(1),
+                                                    modality_positions,
+                                                    accelerator.device,
+                                                    ).to(weight_type)
 
-            _, loss_ntp = model.forward_und_only(text_tokens=text_tokens,
-                                    image_latents=image_latents,
-                                    t=t.to(weight_type),
-                                    attention_mask=vqa_block_mask,
-                                    # image_masks=vqa_image_masks,
-                                    text_labels=text_labels,
-                                    # image_labels=image_labels,
-                                    modality_positions=modality_positions,
-                                    output_hidden_states=True,
-                                    max_seq_len=text_tokens.size(1),
-                                    device=accelerator.device,
-                                )
+                _, loss_ntp = model.forward_und_only(text_tokens=text_tokens,
+                                        image_latents=image_latents,
+                                        t=t.to(weight_type),
+                                        attention_mask=vqa_block_mask,
+                                        # image_masks=vqa_image_masks,
+                                        text_labels=text_labels,
+                                        # image_labels=image_labels,
+                                        modality_positions=modality_positions,
+                                        output_hidden_states=True,
+                                        max_seq_len=text_tokens.size(1),
+                                        device=accelerator.device,
+                                    )
 
-            loss_ntp_m.update(loss_ntp.item())
+                loss_ntp_m.update(loss_ntp.item())
+            else:
+                loss_ntp = torch.zeros((), device=accelerator.device, dtype=weight_type)
 
             if pred_act:
                 loss_action = sum(action_loss_dict.values())
@@ -1169,13 +1177,18 @@ def save_checkpoint(model, config, accelerator, global_step):
                     json.dump(unwrapped_model.config.to_dict(), f, indent=2)
         json.dump({"global_step": global_step}, (save_path / "metadata.json").open("w+"))
         logger.info(f"Saved state to {save_path}")
+        del state_dict
     else:
         # On non-main processes, still need to get state_dict for synchronization
         try:
-            _ = accelerator.get_state_dict(model)
+            state_dict = accelerator.get_state_dict(model)
+            del state_dict
         except (KeyError, AttributeError):
             pass  # Ignore errors on non-main processes
 
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

@@ -207,6 +207,7 @@ training:
     use_compile: True
     compile_mode: "default"
 
+    use_vqa_grounding: True
     use_visualized_grounding: True
     grounding_metas_path: ./meta_grounding_data
     batch_size_grounding: 5
@@ -218,6 +219,7 @@ training:
         - ./grounding_data_ann/meta_libero/split/libero_goal_grounding_metainfo_0430.json
         # - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0426.json
         - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0509.json
+        - ./grounding_data_ann/meta_lumi/lumi_grounding_metainfo.json
     batch_size_robot_grounding: 1
     robot_grounding_vis_mode: rand
     robot_grounding_num_samples_per_video: 1

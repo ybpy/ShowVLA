@@ -86,7 +86,7 @@ def _freeze_params(model, frozen_params=None):
 
 
 path_to_llm_name = {
-    "Qwen/Qwen2.5-7B-Instruct": 'qwen2_5',
+    "Qwen/Qwen2.5-1.5B-Instruct": 'qwen2_5',
     "Qwen/Qwen2.5-1.5B-Instruct": 'qwen2_5',
     "meta-llama/Llama-3.2-1B-Instruct": 'llama3'
 }

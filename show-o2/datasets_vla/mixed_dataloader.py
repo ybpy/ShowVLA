@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from torch.utils.data import DataLoader
-from typing import List, Literal
+from typing import List, Literal, Optional
 import bisect
 import random
 import collections
@@ -33,13 +33,23 @@ def weighted_random_sample_fast(elements, probabilities):
 class MixedDataLoader:
     def __init__(self,
                  loader_list: List[DataLoader],
-                 samp_probs: List[float] = [0.1],
-                 accumulation: int = 1,
-                 mode: Literal['max_size_cycle', 'min_size'] = 'max_size_cycle',
+                 samp_probs: Optional[List[float]] = None,
+                 accumulation: Optional[int] = None,
+                 mode: Literal[
+                     'max_size_cycle', 'min_size', 'concat_max_size_cycle',
+                     'concat_min_size', 'sequential_max_size_cycle',
+                 ] = 'max_size_cycle',
                  n_iters_per_sequential_iter: int = 1,
                  ):
-        self.accumulation = accumulation
-        self.samp_probs = samp_probs
+        n = len(loader_list)
+        if accumulation is None:
+            self.accumulation = 1
+        else:
+            self.accumulation = accumulation
+        if samp_probs is None:
+            self.samp_probs = [1.0 / n] * n if n else []
+        else:
+            self.samp_probs = samp_probs
         self.mode = mode
         self.n_iters_per_sequential_iter = n_iters_per_sequential_iter
         self.current_loader_idx = 0
@@ -148,7 +158,7 @@ class MixedDataLoader:
             for k, v in data.items():
                 batched[k].append(v)
         for k, v in batched.items():
-            if k in ('texts', 'data_type', 'language_instruction'):
+            if k in ('texts', 'data_type', 'language_instruction', 'modality_positions', 'action_positions'):
                 batched[k] = list(chain.from_iterable(v))
             else:
                 batched[k] = torch.concat(v, dim=0)

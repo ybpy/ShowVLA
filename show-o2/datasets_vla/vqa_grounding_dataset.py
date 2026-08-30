@@ -142,7 +142,6 @@ class VQAGroundingDataset(Dataset):
 
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
-        modality_positions = torch.tensor(modality_positions)
 
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -200,7 +199,7 @@ class VQAGroundingDataset(Dataset):
             for key, value in data.items():
                 batched[key].append(value)
         for key, value in batched.items():
-            if key not in ('language_instruction',):
+            if key not in ('language_instruction', 'modality_positions', 'action_positions'):
                 batched[key] = torch.stack(value, dim=0)
         return batched
 
@@ -212,7 +211,7 @@ if __name__ == '__main__':
 
     text_tokenizer, showo_token_ids = get_text_tokenizer(
         # "meta-llama/Meta-Llama-3-8B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",
         add_showo_tokens=True,
         return_showo_token_ids=True,
         # llm_name="llama3"

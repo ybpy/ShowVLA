@@ -9,12 +9,12 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-mix_weighted_grounding_jaka0509"
-    output_dir: "showvla-mix_weighted_grounding_jaka0509"
+    name: "showvla-mix_Vis_jaka-calvin-bridge-robomind-droid-agibot_lvis0825"
+    output_dir: "showvla-mix_Vis_jaka-calvin-bridge-robomind-droid-agibot_lvis0825"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
-    save_every: 4000
+    save_every: 5000
     generate_every: 5000
     log_every: 20
     log_grad_norm_every: 20
@@ -155,8 +155,8 @@ dataset:
         max_num_images: 4
 
 optimizer:
-    # name: adamw
-    name: adamw8bit
+    name: adamw
+    # name: adamw8bit
     # name: lion
     params: # default adamw params
         learning_rate_ve: 0.00004
@@ -207,7 +207,13 @@ training:
     use_compile: True
     compile_mode: "default"
 
-    grounding_metas_path: ./meta_grounding_data
+    grounding_metas_path:
+        # - ./meta_grounding_data/coco/coco_train2017_meta.json
+        # - ./meta_grounding_data/coco/coco_val2017_meta.json
+        - ./meta_grounding_data/lvis/lvis_train2017_meta.json
+        - ./meta_grounding_data/lvis/lvis_val2017_meta.json
+        - ./meta_grounding_data/ade20k/ade20k_training_meta.json
+        - ./meta_grounding_data/ade20k/ade20k_validation_meta.json
     batch_size_grounding: 5
     robot_grounding_metas_path: 
         - ./grounding_data_ann/meta_libero/split/libero_90_grounding_metainfo_0412.json
@@ -217,6 +223,7 @@ training:
         - ./grounding_data_ann/meta_libero/split/libero_goal_grounding_metainfo_0430.json
         # - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0426.json
         - ./grounding_data_ann/meta_jaka/jaka_clutter_grounding_metainfo_0509.json
+        - ./grounding_data_ann/meta_lumi/lumi_grounding_metainfo.json
     batch_size_robot_grounding: 1
     robot_grounding_vis_mode: rand
     robot_grounding_num_samples_per_video: 1
@@ -224,11 +231,11 @@ training:
         # - ../../datasets/Something-Something-V2/labels/train.json
         # - ../../datasets/Something-Something-V2/labels/validation.json
     batch_size_video: 0
-    train_metas_path: ./meta_join_libero_jaka/split_all_max_JAKA
-    batch_size_vla: 6
+    train_metas_path: ./meta_join_libero_jaka/split_all_max_JAKA_Calvin_Bridge_Droid_agilex_ur_AGIBOT
+    batch_size_vla: 4
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 3
+    gradient_accumulation_steps: 4
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2
@@ -238,7 +245,7 @@ training:
     max_train_steps: 25000
     cond_dropout_prob: 0.1
     label_smoothing: 0.0
-    max_grad_norm: 0.8
+    max_grad_norm: 0.5
     ntp_coeff: 0.2
     flow_coeff: 1.0
     und_max_t0: 1.0

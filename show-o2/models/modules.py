@@ -172,9 +172,12 @@ class ModulatedAttentionBlock(nn.Module):
             torch.zeros_like(hidden_states), torch.zeros_like(hidden_states), torch.ones_like(hidden_states), \
             torch.zeros_like(hidden_states), torch.zeros_like(hidden_states), torch.ones_like(hidden_states)
 
+        flat_m = 0
         for i, modality_batch in enumerate(modality_positions):
-            for j, (offset, length) in enumerate(modality_batch):
-                idx = i * modality_positions.size(1) + j
+            for j, pos in enumerate(modality_batch):
+                offset, length = int(pos[0]), int(pos[1])
+                idx = flat_m
+                flat_m += 1
                 shift_msa_new[i, offset: offset + length] = shift_msa[idx]
                 scale_msa_new[i, offset: offset + length] = scale_msa[idx]
                 gate_msa_new[i, offset: offset + length] = gate_msa[idx]
@@ -794,9 +797,12 @@ class FinalLayer(nn.Module):
 
         # We only modulate the image embeddings
         shift_new, scale_new = torch.zeros_like(x), torch.zeros_like(x)
+        flat_m = 0
         for i, modality_batch in enumerate(modality_positions):
-            for j, (offset, length) in enumerate(modality_batch):
-                idx = i * modality_positions.size(1) + j
+            for j, pos in enumerate(modality_batch):
+                offset, length = int(pos[0]), int(pos[1])
+                idx = flat_m
+                flat_m += 1
                 shift_new[i, offset: offset + length] = shift[idx]
                 scale_new[i, offset: offset + length] = scale[idx]
         # We only modulate the image embeddings

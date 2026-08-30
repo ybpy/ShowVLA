@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=0 python inference_vla_vqa_grounding.py config=configs/showvla-moe_mix_vqa-336x320.yaml \
+                        model_path="showvla-mix_weighted_COMBgrounding_jaka/checkpoint-25000/unwrapped_model/pytorch_model.bin"

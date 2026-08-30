@@ -4,6 +4,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import argparse
 import json
+import re
 import h5py
 import time
 import numpy as np
@@ -12,7 +13,15 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 from PIL import Image
 from io import BytesIO
+import mediapy as media
 
+
+def normalize_inst(inst, max_len=120):
+    """Normalize language instruction into a filesystem-safe filename stem."""
+    s = str(inst).strip().lower()
+    s = re.sub(r'[^\w\-]+', '_', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s[:max_len]
 
 
 def encode_frames_to_jpeg_bytes(frames):
@@ -24,7 +33,7 @@ def encode_frames_to_jpeg_bytes(frames):
         pil_image = Image.fromarray(frame)
         # Encode to JPEG bytes
         buffer = BytesIO()
-        pil_image.save(buffer, format='JPEG', quality=100)
+        pil_image.save(buffer, format='JPEG')
         encoded[idx] = np.frombuffer(buffer.getvalue(), dtype=np.uint8)
     return encoded
 
@@ -110,6 +119,11 @@ def save_to_lmdb(output_dir, input_dir, dataset_name, metainfo_json_out_path, st
             h5_file.create_dataset("rgb_comb", data=rgb_comb_bytes, dtype=vlen_uint8)
             h5_file.create_dataset("proprio", data=list_proprio)
 
+        # Save combined RGB frames to MP4 (fps=10)
+        h5_stem = os.path.splitext(os.path.basename(new_data_path))[0]
+        mp4_path = os.path.join(output_dir, f"{h5_stem}_{normalize_inst(inst)}.mp4")
+        media.write_video(mp4_path, comb_images, fps=10)
+
         meta_json["datalist"].append(new_data_path)
         
         cur_episode += 1
@@ -135,10 +149,10 @@ if __name__ == '__main__':
     test_dir = args.test_dir
     dataset_name = args.dataset_name
     
-    metainfo_json_out_path = f"./train/{dataset_name}_train_metainfo.json"
+    metainfo_json_out_path = f"{dataset_name}_train_metainfo.json"
     os.makedirs(train_dir, exist_ok=True)
     save_to_lmdb(train_dir, os.path.join(input_dir, 'training'), dataset_name, metainfo_json_out_path, start_index=0)
 
-    metainfo_json_out_path = f"./test/{dataset_name}_test_metainfo.json"
+    metainfo_json_out_path = f"{dataset_name}_test_metainfo.json"
     os.makedirs(test_dir, exist_ok=True)
     save_to_lmdb(test_dir, os.path.join(input_dir, 'validation'), dataset_name, metainfo_json_out_path, start_index=0)

@@ -9,8 +9,8 @@ uncycled_moe_init_model_path: "show-o2-1.5B-moe"
 
 experiment:
     project: "show-vla"
-    name: "showvla-future_act_weighted_grounding_jaka0430"
-    output_dir: "showvla-future_act_weighted_grounding_jaka0430"
+    name: "showvla-future_act_Vis_jaka-calvin-bridge-robomind-droid-agibot_lvis0825"
+    output_dir: "showvla-future_act_Vis_jaka-calvin-bridge-robomind-droid-agibot_lvis0825"
     output_dataloader_state_dir: null
     max_train_examples_t2i: 60000000 # 10M HQ generation data
     max_train_examples_mmu: null
@@ -155,8 +155,8 @@ dataset:
         max_num_images: 4
 
 optimizer:
-    # name: adamw
-    name: adamw8bit
+    name: adamw
+    # name: adamw8bit
     # name: lion
     params: # default adamw params
         learning_rate_ve: 0.00005
@@ -208,10 +208,10 @@ training:
     compile_mode: "default"
 
     train_metas_path: ./meta_join_libero_jaka/split_spatial_object_goal_10_max_JAKA
-    batch_size_vla: 14
+    batch_size_vla: 8
     action_coeff: 1.0
 
-    gradient_accumulation_steps: 2
+    gradient_accumulation_steps: 4
     batch_size: 1
     batch_size_mmu: 1
     batch_size_mixed_modal: 2

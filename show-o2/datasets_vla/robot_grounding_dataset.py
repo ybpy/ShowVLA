@@ -85,8 +85,7 @@ class RobotGroundingDataset(IterableDataset):
         self.num_processes = 1
         self.process_index = 0
 
-    def set_epoch(self, epoch: int, num_processes: int = 1, process_index: int = 0):
-        self.epoch = epoch
+    def set_process_info(self, num_processes: int = 1, process_index: int = 0):
         self.num_processes = num_processes
         self.process_index = process_index
 
@@ -125,8 +124,6 @@ class RobotGroundingDataset(IterableDataset):
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
-
-        modality_positions = torch.tensor(modality_positions)
 
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -196,16 +193,33 @@ class RobotGroundingDataset(IterableDataset):
             sampled_local_indices = list(range(len(sampled_indices)))
             random.shuffle(sampled_local_indices)
             for i in sampled_local_indices:
-                sample = self._process_sample(
-                    all_img_bytes[i], 
-                    all_bboxes[i], 
-                    all_rles[i], 
-                    object_names
-                )
+                try:
+                    sample = self._process_sample(
+                        all_img_bytes[i],
+                        all_bboxes[i],
+                        all_rles[i],
+                        object_names,
+                        h5_path=h5_path,
+                    )
+                except Exception as e:
+                    # print(f"Error processing sample {i} of {h5_path}: {e}", flush=True)
+                    continue
                 if sample is not None:
+                    if 'libero' in h5_path:
+                        images = sample['images']   # [2, C, H, W]
+                        assert images.shape[-2:] == (336, 320), images.shape
+                        main_h, wrist_w = 224, 160
+                        bottom_left = images[:, :, main_h:, :wrist_w].clone()
+                        bottom_right = images[:, :, main_h:, wrist_w:].clone()
+                        images[:, :, main_h:, :wrist_w] = bottom_right
+                        images[:, :, main_h:, wrist_w:] = bottom_left
+                        sample['images'] = images
                     yield sample
 
-    def _process_sample(self, img_jpeg_bytes, bbox_xywh, rle_data, object_names):
+        # 每跑完一轮分片后自增，下一轮 __iter__ 使用新 seed（各 DataLoader worker 进程内各自维护）
+        self.epoch = self.epoch + 1
+
+    def _process_sample(self, img_jpeg_bytes, bbox_xywh, rle_data, object_names, h5_path: str = ""):
         # Data decoding and processing
         img_rgb = decode_jpeg_object(img_jpeg_bytes)
         
@@ -219,6 +233,7 @@ class RobotGroundingDataset(IterableDataset):
         task_mode = self.vis_mode
         
         if self.vis_mode == "rand":
+            # mode_pick = np.random.choice(["bbox", "segment_mask"])
             mode_pick = np.random.choice(["bbox", "segment_mask", "combine"])
             current_vis_mode = mode_pick
             task_mode = mode_pick
@@ -232,17 +247,33 @@ class RobotGroundingDataset(IterableDataset):
         bbox_xywh, rle_data, object_names = filtered
 
         object_names_unique = list(set(object_names))
-        assert 1 <= len(object_names_unique) <= 2, object_names_unique
+        path_l = h5_path.lower()
+        # Liberо / JAKA 标注约定为每帧 1–2 类；其它数据（如 Lumi）超过 3 类时随机保留 1–2 类
+        if "libero" in path_l or "jaka" in path_l:
+            assert 1 <= len(object_names_unique) <= 2, (h5_path, object_names_unique)
+        else:
+            assert len(object_names_unique) >= 1, (h5_path, object_names_unique)
+            if len(object_names_unique) > 2:
+                n_keep = int(np.random.randint(1, 3))  # 1~2
+                chosen = [
+                    str(x)
+                    for x in np.random.choice(object_names_unique, size=n_keep, replace=False)
+                ]
+                bbox_xywh, rle_data, object_names = self._keep_categories(
+                    bbox_xywh, rle_data, object_names, set(chosen)
+                )
+                object_names_unique = chosen
         if len(object_names_unique) > 1 and np.random.rand() < 0.5:
-            category = np.random.choice(object_names_unique)
-            bbox_xywh_of_category = []
-            rle_data_of_category = []
-            for bbox, rle, object_name in zip(bbox_xywh, rle_data, object_names):
-                if object_name == category:
-                    bbox_xywh_of_category.append(bbox)
-                    rle_data_of_category.append(rle)
-            bbox_xywh, rle_data = bbox_xywh_of_category, rle_data_of_category
+            category = str(np.random.choice(np.asarray(object_names_unique, dtype=object)))
+            bbox_xywh, rle_data, object_names = self._keep_categories(
+                bbox_xywh, rle_data, object_names, {category}
+            )
             object_names_unique = [category]
+
+        assert len(object_names) == len(bbox_xywh) == len(rle_data) > 0, (
+            h5_path,
+            object_names_unique,
+        )
 
         vis_img = self._get_visualized_image(img_rgb, bbox_xywh, rle_data, current_vis_mode, color_rgb)
         # Generate instruction
@@ -274,6 +305,21 @@ class RobotGroundingDataset(IterableDataset):
             'text_masks': text_mask,
             'image_masks': image_mask,
         }
+
+    @staticmethod
+    def _keep_categories(bbox_xywh, rle_data, object_names, categories):
+        """Keep instances whose name is in ``categories`` (non-empty)."""
+        categories = {str(c) for c in categories}
+        bbox_out = []
+        rle_out = []
+        names_out = []
+        for bbox, rle, object_name in zip(bbox_xywh, rle_data, object_names):
+            if str(object_name) in categories:
+                bbox_out.append(np.asarray(bbox))
+                rle_out.append(rle)
+                names_out.append(str(object_name))
+        assert len(names_out) > 0, (categories, object_names)
+        return bbox_out, rle_out, names_out
 
     def _filter_grounding_to_frame(
         self,
@@ -310,10 +356,41 @@ class RobotGroundingDataset(IterableDataset):
         draw_mask = mode in ["segment_mask", "combine"]
 
         if draw_bbox:
+            h_img, w_img = img.shape[:2]
+            assert h_img == 336 and w_img == 320, (h_img, w_img)
+            main_h, mid_w = 224, 160
+            thickness = 2
+            inset = 1
+            # Three view regions: main (top) / left-wrist / right-wrist (bottom).
+            view_rects = (
+                (0, 0, w_img, main_h),          # main
+                (0, main_h, mid_w, h_img),      # left wrist
+                (mid_w, main_h, w_img, h_img),  # right wrist
+            )
             for bbox in bbox_xywh:
                 x, y, bw, bh = bbox.astype(np.int32)
                 assert bw > 0 and bh > 0
-                cv2.rectangle(img, (x, y), (x + bw, y + bh), color_rgb, 2)
+                cx, cy = x + bw * 0.5, y + bh * 0.5
+                x_min, y_min, x_max, y_max = view_rects[0]
+                for rect in view_rects:
+                    rx0, ry0, rx1, ry1 = rect
+                    if rx0 <= cx < rx1 and ry0 <= cy < ry1:
+                        x_min, y_min, x_max, y_max = rect
+                        break
+                x1 = max(x_min, min(x_max - 1, int(x)))
+                y1 = max(y_min, min(y_max - 1, int(y)))
+                x2 = max(x_min, min(x_max - 1, int(x + bw)))
+                y2 = max(y_min, min(y_max - 1, int(y + bh)))
+                if x1 <= x_min:
+                    x1 = x_min + inset
+                if y1 <= y_min:
+                    y1 = y_min + inset
+                if x2 >= x_max - 1:
+                    x2 = x_max - 1 - inset
+                if y2 >= y_max - 1:
+                    y2 = y_max - 1 - inset
+                if x2 > x1 and y2 > y1:
+                    cv2.rectangle(img, (x1, y1), (x2, y2), color_rgb, thickness)
 
         if draw_mask:
             # Draw masks
@@ -341,7 +418,7 @@ class RobotGroundingDataset(IterableDataset):
             for key, value in data.items():
                 batched[key].append(value)
         for key, value in batched.items():
-            if key not in ('language_instruction',):
+            if key not in ('language_instruction', 'modality_positions', 'action_positions'):
                 batched[key] = torch.stack(value, dim=0)
         return batched
 
@@ -351,7 +428,7 @@ if __name__ == '__main__':
     from models.misc import get_text_tokenizer
 
     text_tokenizer, showo_token_ids = get_text_tokenizer(
-        "Qwen/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",
         add_showo_tokens=True,
         return_showo_token_ids=True,
         llm_name="qwen2_5"

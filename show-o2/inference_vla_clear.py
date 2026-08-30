@@ -33,7 +33,7 @@ from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 import numpy as np
 from einops import rearrange
-from datasets_vla import create_dataloader
+from datasets_vla import create_dataloader, create_video_dataset_loader, MixedDataLoader
 
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
@@ -75,7 +75,10 @@ if __name__ == '__main__':
 
     # Initialize Show-o model
     use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
-    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
+    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False
+    pred_mobile_act = config.model.showo.get('pred_mobile_act', False)
+    if pred_mobile_act:
+        assert pred_act, "pred_mobile_act=True requires pred_act=True"
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
@@ -153,6 +156,9 @@ if __name__ == '__main__':
                 "action_decoder",
                 "soft_prompt_hub",
             ]
+            if pred_mobile_act:
+                modules_to_save.append("mobile_norm")
+                modules_to_save.append("mobile_decoder")
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
                 continue
@@ -230,8 +236,8 @@ if __name__ == '__main__':
     random_query_duration = config.xvla.random_query_duration if 'random_query_duration' in config.xvla else False
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
-    mixed_loader = create_dataloader(
-        num_workers=dataset_config.num_workers,
+    xvla_loader = create_dataloader(
+        num_workers=4,
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
         num_actions=config.xvla.num_actions,
@@ -246,6 +252,30 @@ if __name__ == '__main__':
         random_query_duration=random_query_duration,
         num_future_imgs=num_future_imgs,
         given_freq=given_freq,
+    )
+    loader_list = [xvla_loader]
+
+    if config.training.video_metas_paths:
+        # Dataloader for Video Dataset (e.g., Something-Something-V2)
+        train_dataloader_video = create_video_dataset_loader(
+            num_workers=dataset_config.num_workers,
+            batch_size=config.training.batch_size_video,
+            metas_paths=config.training.video_metas_paths,
+            text_tokenizer=text_tokenizer,
+            showo_token_ids=showo_token_ids,
+            max_seq_len=preproc_config.max_vla_seq_len,
+            image_size=preproc_config.vla_image_size,
+            num_image_tokens=preproc_config.num_vla_image_tokens,
+            training=True,
+            num_future_imgs=num_future_imgs,
+        )
+        loader_list.append(train_dataloader_video)
+    
+    
+    # Combine these dataloaders into a single iterable
+    mixed_loader = MixedDataLoader(
+        loader_list=loader_list,
+        mode=config.dataset.mixed_loader_mode
     )
 
     dtype = weight_type
@@ -296,13 +326,14 @@ if __name__ == '__main__':
 
         text_masks = batch['text_masks'].to(device)
         image_masks = batch['image_masks'].to(device)
-        modality_positions = batch['modality_positions'].to(device)
+        modality_positions_batch = batch['modality_positions']
 
-        for text, text_tokens, pixel_values, text_masks, image_masks, modality_positions in zip(
-            texts, torch.split(text_tokens, 1), torch.split(pixel_values, 1), torch.split(text_masks, 1), torch.split(image_masks, 1), torch.split(modality_positions, 1),
+        for text, text_tokens, pixel_values, text_masks, image_masks, mp in zip(
+            texts, torch.split(text_tokens, 1), torch.split(pixel_values, 1), torch.split(text_masks, 1), torch.split(image_masks, 1), modality_positions_batch,
         ):
             assert text_tokens.size(0) == 1
             print(f"\nsample_idx: {sample_idx}")
+            modality_positions = [mp]
             
             image_latents, t_img = prepare_image_latents(pixel_values)
             

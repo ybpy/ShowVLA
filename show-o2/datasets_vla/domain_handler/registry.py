@@ -20,10 +20,11 @@ from .base import DomainHandler
 
 # Handlers
 from .lerobot_agibot import AGIBOTLeRobotHandler
+from .hdf5_agibot import AGIBOTHDF5Handler
 from .agiworld import AGIWolrdHandler
 from .robomind import RobomindHandler
 from .droid import DroidHandler
-from .real_world import AIRAgilexHandler, AIRAgilexHQHandler, AIRBotHandler, WidowxAirHandler, ATECupHandler, JAKAHandler
+from .real_world import AIRAgilexHandler, AIRAgilexHQHandler, AIRBotHandler, WidowxAirHandler, ATECupHandler, JAKAHandler, LumiHandler
 from .simulations import BridgeHandler, LiberoHandler, VLABenchHandler, RobotWin2Handler, RobocasaHumanHandler, CalvinHandler, RT1Handler
 
 # 1) Exact registry only (no heuristics)
@@ -31,6 +32,10 @@ _REGISTRY: Dict[str, Type[DomainHandler]] = {
     # LeRobot (parquet)
     "AGIBOT": AGIBOTLeRobotHandler,
     "AGIBOT-challenge": AGIBOTLeRobotHandler,
+
+    # AGIBOT HDF5
+    "AGIBOT-HDF5-Sim": AGIBOTHDF5Handler,
+    "AGIBOT-HDF5-Real": AGIBOTHDF5Handler,
 
     # HDF5 (exact)
     "Calvin": CalvinHandler,
@@ -49,6 +54,9 @@ _REGISTRY: Dict[str, Type[DomainHandler]] = {
     # JAKA
     "JAKA": JAKAHandler,
     "JAKA_clutter": JAKAHandler,
+
+    # Lumi mobile
+    "Lumi-mobile": LumiHandler,
 
     # libero splits
     "libero_spatial": LiberoHandler,

@@ -237,9 +237,10 @@ class LiberoAbsActionProcessor:
 class ClientModel:
     """Thin HTTP client that queries a remote policy server and returns actions."""
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, wrist_at_left: bool = True):
         self.url = f"http://{host}:{port}/act"
         self.processor = LiberoAbsActionProcessor()
+        self.wrist_at_left = wrist_at_left
         self.reset()
 
     def reset(self) -> None:
@@ -250,7 +251,7 @@ class ClientModel:
         main_view = _flip_agentview(obs["agentview_image"])  # (256,256,3)
         wrist_view = obs["robot0_eye_in_hand_image"]  # (256,256,3)
 
-        comb_rgb = combine_main_wrist_views(main_view, wrist_view)
+        comb_rgb = combine_main_wrist_views(main_view, wrist_view, wrist_at_left=self.wrist_at_left)
 
         closed_loop_proprio = np.concatenate([obs['robo_pos'], obs['robo_ori'], np.array([0.0])], axis=-1)
         closed_loop_proprio = np.concatenate([closed_loop_proprio, np.zeros_like(closed_loop_proprio)], axis=-1)
@@ -372,7 +373,7 @@ class LIBEROEval:
 
     def _log_results(self, metrics: Dict) -> None:
         print(metrics)
-        save_name = self.base_dir / 'results.json'
+        save_name = self.base_dir / f'_{self.task_suite_name}.json'
         with open(save_name, 'a+', encoding='utf-8') as f:
             f.write(json.dumps(metrics) + "\n")
 
@@ -396,11 +397,12 @@ class LIBEROEval:
         if len(list_valid_inst) == 1:
             lang_ = list_valid_inst[0]
         else:
-            print(f"[Special Task Instruction: {lang_}]\n")
+            print(f"[Special Task Instruction: {lang_}]", flush=True)
+        print(f"{lang} -> {lang_}", flush=True)
 
         try:
             done_flag = False
-            for _ in tqdm(range(self.eval_horizon), desc=f'{lang}'):
+            for _ in range(self.eval_horizon):
                 robo_ori = self.processor.Mat_to_Rotate6D(env.env.robots[0].controller.ee_ori_mat)
                 robo_pos = env.env.robots[0].controller.ee_pos
                 obs['robo_ori'] = robo_ori
@@ -430,7 +432,7 @@ class LIBEROEval:
             )
             traceback.print_exc()
             env.close()
-            return 0.0
+            return -1
 
     # ---- public API --------------------------------------------------------
     def eval_episodes(self, policy: ClientModel, save_path: Path) -> float:
@@ -439,15 +441,21 @@ class LIBEROEval:
         rews: List[float] = []
         task_to_succ = dict()
         for task_suite in self.task_suite_list:
-            for task_id in tqdm(range(len(task_suite.tasks)), desc="Evaluating tasks"):
+            for task_id in range(len(task_suite.tasks)):
                 task_total_rew = 0
+                num_valid_eps = 0
                 for ep in range(self.num_episodes):
                     policy.reset()
                     rew = self._rollout(task_suite, policy, task_id, ep)
+                    if rew == -1:
+                        continue
+                    num_valid_eps += 1
                     rews.append(rew)
                     task_total_rew += rew
+                if num_valid_eps == 0:
+                    continue
                 task = task_suite.get_task(task_id).language.replace(' ', '_')
-                task_to_succ[f"{self.task_suite_name}/{task}"] = task_total_rew / self.num_episodes
+                task_to_succ[f"{self.task_suite_name}/{task}"] = task_total_rew / num_valid_eps
                 
         self._log_results(task_to_succ)
 
@@ -510,6 +518,8 @@ if __name__ == "__main__":
     parser.add_argument("--eval_time", type=int, default=50, help="Episodes per task")
     parser.add_argument("--init_seed", type=int, default=42, help="Random seed")
     parser.add_argument("--act_type", type=str, default="abs", choices=["abs", "rel"], help="Action type")
+    parser.add_argument("--wrist_at_left", type=lambda x: str(x).lower() in ("1", "true", "yes"),
+                        default=True, help="Place wrist view on the left of the combined image (default: True)")
 
     args = parser.parse_args()
 
@@ -547,7 +557,7 @@ if __name__ == "__main__":
 
     # ------------------------ 2) Initialize client ---------------------------
     print(f"🛰️  Connecting to policy server at {host}:{port} ...")
-    client = ClientModel(host, port)
+    client = ClientModel(host, port, wrist_at_left=args.wrist_at_left)
     print("✅ Successfully initialized client!")
 
     # ------------------------ 3) Run evaluation ------------------------------
@@ -558,6 +568,7 @@ if __name__ == "__main__":
     print("task suites:", args.task_suites)
     print("episodes per task:", args.eval_time)
     print("action type:", args.act_type)
+    print("wrist_at_left:", args.wrist_at_left)
     print("-" * 88)
 
     try:

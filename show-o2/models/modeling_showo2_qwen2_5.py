@@ -73,6 +73,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             len_soft_prompts=32,
             max_len_seq=512,
             num_domains=30,
+            pred_mobile_act=False,
+            mobile_dim=3,
             **kwargs,
     ):
         super().__init__()
@@ -115,11 +117,17 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         )
 
         self.use_img_trans_field = use_img_trans_field
+        
+        self.pred_mobile_act = pred_mobile_act
+        self.mobile_dim = mobile_dim
+        if pred_mobile_act:
+            assert xvla_hidden_size, "pred_mobile_act=True requires xvla_hidden_size"
 
         if xvla_hidden_size:
             self.xvla_hidden_size = xvla_hidden_size
             self.project_xvla_encode = nn.Linear(xvla_hidden_size, hidden_size)
             self.project_xvla_decode = nn.Linear(hidden_size, xvla_hidden_size)
+            self.project_xvla_vlm = nn.Linear(hidden_size, xvla_hidden_size)
 
             self.xvla_depth = xvla_depth
             self.blocks = nn.ModuleList(
@@ -134,6 +142,11 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 action_dim + proprio_dim + time_dim, xvla_hidden_size, num_domains=num_domains
             )
             self.action_decoder = DomainAwareLinear(xvla_hidden_size, action_dim, num_domains=num_domains)
+            if pred_mobile_act:
+                self.mobile_norm = nn.LayerNorm(xvla_hidden_size)
+                self.mobile_decoder = DomainAwareLinear(
+                    xvla_hidden_size, mobile_dim, num_domains=num_domains
+                )
 
             self.len_soft_prompts = len_soft_prompts
             if len_soft_prompts > 0:
@@ -255,6 +268,25 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             "gripper_loss": gripper_loss,
         }
 
+    def compute_mobile_loss(self, pred, target, mask):
+        """
+        Masked MSE for chassis / AGV velocities.
+
+        Parameters
+        ----------
+        pred, target : Tensor [B, T, mobile_dim]
+        mask : Tensor [B, mobile_dim] or [mobile_dim]
+            True = supervised DoF (e.g. Lumi: vx & angular; vy ignored).
+        """
+        assert pred.shape == target.shape, "pred/target shapes must match"
+        if mask.ndim == 1:
+            mask = mask.unsqueeze(0).expand(pred.shape[0], -1)
+        assert mask.shape == (pred.shape[0], pred.shape[-1]), (mask.shape, pred.shape)
+
+        mask_bt = mask[:, None, :].to(dtype=pred.dtype, device=pred.device).expand_as(pred)
+        denom = mask_bt.sum().clamp(min=1.0)
+        return ((pred - target) ** 2 * mask_bt).sum() / denom
+
     def unpatchify(self, x, h, w, T=0):
         """
         x: (N, T, patch_size**2 * C)
@@ -339,16 +371,18 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
         else:
             time_embeds_proj = time_embeds
 
+        flat_m = 0
         for i, modality_batch in enumerate(modality_positions):
-            for j, (offset, length) in enumerate(modality_batch):
+            for j, pos in enumerate(modality_batch):
+                offset, length = pos
                 if self.config.add_time_embeds:
-                    input_embeds[i, offset] = time_embeds_proj[i * modality_positions.size(1) + j]
+                    input_embeds[i, offset] = time_embeds_proj[flat_m]
                     # length - 1 because we add 1 to the num_image_tokens when add_time_embeds=True
-                    # it's necessary to include :length-1, as sometimes we may skip some idle images when length=0
                     input_embeds[i, offset + 1:offset + 1 + length - 1] = \
-                        image_embeds[i * modality_positions.size(1) + j, :max(length - 1, 0)]
+                        image_embeds[flat_m, :length - 1]
                 else:
-                    input_embeds[i, offset:offset + length] = image_embeds[i * modality_positions.size(1) + j, :length]
+                    input_embeds[i, offset:offset + length] = image_embeds[flat_m, :length]
+                flat_m += 1
 
         outputs = self.showo(
             inputs_embeds=input_embeds,
@@ -389,6 +423,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             action_positions=None,
             t_action=None,
             actions_noise=None,
+            agv_action=None,
+            agv_action_mask=None,
             **kwargs,
     ):
         B, L = text_tokens.shape
@@ -468,28 +504,26 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 new_image_labels = torch.zeros([b, max_seq_len, p * p * c], device=device, dtype=dtype)
                 image_masks = image_masks[:, :, None].repeat(1, 1, p * p * c)
 
+            flat_m = 0
             for i, modality_batch in enumerate(modality_positions):
-                for j, (offset, length) in enumerate(modality_batch):
+                for j, pos in enumerate(modality_batch):
+                    offset, length = pos
                     if self.config.add_time_embeds:
-                        input_embeds[i, offset] = time_embeds_proj[i * modality_positions.size(1) + j]
+                        input_embeds[i, offset] = time_embeds_proj[flat_m]
                         # length - 1 because we add 1 to the num_image_tokens when add_time_embeds=True
-                        # it's necessary to include :length-1, as sometimes we may skip some idle images when length=0
                         input_embeds[i, offset + 1:offset + 1 + length - 1] = image_embeds[
-                                                                              i * modality_positions.size(1) + j,
-                                                                              :max(length - 1, 0)]
+                                                                              flat_m,
+                                                                              :length - 1]
                         if image_labels is not None:
                             # mask the position of time embedding
                             image_masks[i, offset] = 0
-                            # it's necessary to include :length-1, as sometimes we may skip some idle images when length=0
                             new_image_labels[i, offset + 1:offset + 1 + length - 1] = image_labels[
-                                                                                      i * modality_positions.size(
-                                                                                          1) + j, :max(length - 1, 0)]
+                                                                                      flat_m, :length - 1]
                     else:
-                        input_embeds[i, offset:offset + length] = image_embeds[i * modality_positions.size(1) + j,
-                                                                  :length]
+                        input_embeds[i, offset:offset + length] = image_embeds[flat_m, :length]
                         if image_labels is not None:
-                            new_image_labels[i, offset:offset + length] = image_labels[
-                                                                          i * modality_positions.size(1) + j, :length]
+                            new_image_labels[i, offset:offset + length] = image_labels[flat_m, :length]
+                    flat_m += 1
 
             action_tokens = None
             if actions is not None:
@@ -526,8 +560,11 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 action_embeds = self.project_xvla_encode(action_embeds)
 
                 for i, action_batch in enumerate(action_positions):
-                    for j, (offset, length) in enumerate(action_batch): 
-                        input_embeds[i, offset:offset + length] = action_embeds[i * action_positions.size(1) + j]
+                    a_cursor = 0
+                    for pos in action_batch:
+                        offset, length = pos
+                        input_embeds[i, offset:offset + length] = action_embeds[i, a_cursor:a_cursor + length]
+                        a_cursor += length
 
 
             outputs = self.showo(
@@ -541,23 +578,45 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
 
             if action_tokens is not None: 
-                # last_hidden_states_proj = self.project_xvla_decode(last_hidden_states)
-                # for block in self.blocks:
-                #     last_hidden_states_proj = block(last_hidden_states_proj)
-                
-                # Extract action embeddings from last_hidden_states
+                # Prefix = obs image + instruction before " Future image:" / " Future video:" (3 tokens).
+                # Concat with the action slot [soft prompt | action], right-pad prefix (X-VLA style, no attn mask).
+                prompt_suffix_len = 3
+                prefix_list = []
                 action_embeds_list = []
                 for i, action_batch in enumerate(action_positions):
-                    for j, (offset, length) in enumerate(action_batch):
-                        action_embeds_list.append(last_hidden_states[i, offset:offset+length])
+                    assert len(modality_positions[i]) == 2, (
+                        f"action decode expects obs + future image, got {len(modality_positions[i])} modality spans"
+                    )
+                    future_offset, _ = modality_positions[i][1]
+                    # offset points at the first future-image token (after <|vision_start|>)
+                    prefix_end = int(future_offset) - 1 - prompt_suffix_len
+                    prefix_list.append(last_hidden_states[i, :prefix_end])
+
+                    for pos in action_batch:
+                        offset, length = pos
+                        action_embeds_list.append(last_hidden_states[i, offset:offset + length])
                 action_embeds_from_output = torch.stack(action_embeds_list, dim=0)  # [B, num_action_tokens, hidden_size]
 
                 action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output)
+
+                max_prefix_len = max(p.shape[0] for p in prefix_list)
+                prefix_padded = last_hidden_states.new_zeros(
+                    action_embeds_from_output.size(0), max_prefix_len, self.xvla_hidden_size
+                )
+                for i, prefix in enumerate(prefix_list):
+                    prefix_padded[i, :prefix.shape[0]] = self.project_xvla_vlm(prefix)
+                action_embeds_from_output = torch.cat([prefix_padded, action_embeds_from_output], dim=1)
+
+                # action_embeds_from_output = self.project_xvla_decode(action_embeds_from_output)
                 for block in self.blocks:
                     action_embeds_from_output = block(action_embeds_from_output)
 
-                # action head to predict actions
-                pred_actions = self.action_decoder(self.norm(action_embeds_from_output[:, self.len_soft_prompts:]), domain_id=domain_id)
+                # action head to predict actions / mobile
+                action_feat = action_embeds_from_output[:, max_prefix_len + self.len_soft_prompts:]
+                pred_actions = self.action_decoder(self.norm(action_feat), domain_id=domain_id)
+                pred_mobile = None
+                if self.pred_mobile_act:
+                    pred_mobile = self.mobile_decoder(self.mobile_norm(action_feat), domain_id=domain_id)
             
 
             # diffusion head to predict vector fields
@@ -573,11 +632,22 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                                            )[0]
             v_pred = self.diffusion_head_b(last_hidden_states, time_embeds, modality_positions)
 
+        def _action_loss_dict():
+            loss_dict = self.compute_action_loss(pred_actions, action_labels)
+            if self.pred_mobile_act:
+                assert agv_action is not None and agv_action_mask is not None, (
+                    "agv_action and agv_action_mask are required when pred_mobile_act=True"
+                )
+                loss_dict["mobile_loss"] = self.compute_mobile_loss(
+                    pred_mobile, agv_action, agv_action_mask
+                )
+            return loss_dict
+
         # [:v_pred.shape[0]] is the valid image labels (special case for interleaved data training)
         if text_labels is not None and image_labels is not None and action_labels is not None:
             loss_ntp = next_token_prediction(logits, text_labels, self.config.llm_vocab_size)
             loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
-            action_loss_dict = self.compute_action_loss(pred_actions, action_labels)
+            action_loss_dict = _action_loss_dict()
             return logits, loss_ntp, loss_flow, action_loss_dict
         
         elif text_labels is not None and image_labels is not None and action_labels is None:
@@ -591,7 +661,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
 
         elif text_labels is None and image_labels is not None and action_labels is not None:
             loss_flow = velocity_prediction(v_pred, new_image_labels[:v_pred.shape[0]], image_masks)
-            action_loss_dict = self.compute_action_loss(pred_actions, action_labels)
+            action_loss_dict = _action_loss_dict()
             return logits, None, loss_flow, action_loss_dict
         
         elif text_labels is None and image_labels is not None and action_labels is None:
@@ -602,7 +672,8 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
             v_pred_ = []
             num_imgs = 0
             for i, modality_batch in enumerate(modality_positions):
-                for j, (offset, length) in enumerate(modality_batch):
+                for pos in modality_batch:
+                    offset, length = pos
                     if length == 0:
                         break
                     else:
@@ -655,7 +726,7 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     ], dim=0)
 
             if action_tokens is not None:
-                return logits, v_pred_, pred_actions
+                return logits, v_pred_, pred_actions, pred_mobile
             else:
                 return logits, v_pred_
 
@@ -1077,8 +1148,9 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 text_tokens = text_tokens + [pad_id] * (max_seq_len - len(text_tokens))
                 text_tokens = torch.tensor(text_tokens).unsqueeze(0).to(device) # (1, seq_len)
 
-                modality_positions = torch.tensor(modality_positions).unsqueeze(0).to(device) # (1, num_modalities, 2)
-                action_positions = torch.tensor(action_positions).unsqueeze(0).to(device) # (1, num_action_segments, 2)
+                # batch layout: list length B of per-sample ``[(offset, length), ...]``
+                modality_positions = [modality_positions]
+                action_positions = [action_positions]
 
                 # Construct attention mask
                 block_mask = omni_attn_mask_naive(text_tokens.size(0),
@@ -1118,9 +1190,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                 # Inference
                 # Denoising loop
                 dt = (1.0 - pred_future_init_t) / steps
+                pred_mobile = None
                 for i in range(steps, 0, -1):
                     t_action = torch.full((text_tokens.size(0),), fill_value=i / steps, device=device, dtype=dtype)
-                    _, v_pred_, actions = self.forward(text_tokens=text_tokens,
+                    _, v_pred_, actions, pred_mobile = self.forward(text_tokens=text_tokens,
                                                     image_latents=image_latents,
                                                     t=t_img,
                                                     attention_mask=block_mask,
@@ -1139,8 +1212,10 @@ class Showo2Qwen2_5(ModelMixin, ConfigMixin):
                     t_img[1::2] = (t_img[1::2] + dt).clamp(0, 1)
                     
                 actions = actions.squeeze(0).tolist()
-                
-                return JSONResponse({"action": actions})
+                response = {"action": actions}
+                if pred_mobile is not None:
+                    response["agv_action"] = pred_mobile.squeeze(0).tolist()  # [T, 3] = (vx, vy, angular)
+                return JSONResponse(response)
 
             except Exception:
                 logging.error(traceback.format_exc())

@@ -136,8 +136,9 @@ class InfiniteDataReader(IterableDataset):
         else:
             #names = names * 2 # increase the dataset sampling frequency
             gens = [iter(self._iter_one_dataset(n)) for n in names]
-            ws = [DATA_WEIGHTS.get(n, 1.0) for n in names]
-            s = sum(ws); ws = [w / s for w in ws]
+            raw_ws = [DATA_WEIGHTS.get(n, 1.0) for n in names]
+            s = sum(raw_ws); ws = [w / s for w in raw_ws]
+            print("data weight table:", list(zip(names, raw_ws, ws)), flush=True)
             while True:
                 i = random.choices(range(len(names)), weights=ws, k=1)[0]
                 yield next(gens[i])

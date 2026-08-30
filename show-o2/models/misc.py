@@ -30,7 +30,7 @@ def prepare_gen_input(prompts, text_tokenizer, num_image_tokens, bos_id, eos_id,
     for prompt in prompts:
         text_tokens = text_tokenizer(prompt, add_special_tokens=False)['input_ids'][:(max_text_len)]
 
-        modality_positions = torch.tensor([len(text_tokens) + 1 + 1, num_image_tokens]).unsqueeze(0)
+        modality_positions = [(len(text_tokens) + 1 + 1, num_image_tokens)]
         text_tokens = [bos_id] + text_tokens + [boi_id] + [img_pad_id] * num_image_tokens + \
                       [eoi_id] + [eos_id] + [pad_id] * (max_text_len - len(text_tokens))
 
@@ -38,7 +38,7 @@ def prepare_gen_input(prompts, text_tokenizer, num_image_tokens, bos_id, eos_id,
         batch_modality_positions.append(modality_positions)
 
         text_tokens_null = []
-        modality_positions_null = torch.tensor([len(text_tokens_null) + 1 + 1, num_image_tokens]).unsqueeze(0)
+        modality_positions_null = [(len(text_tokens_null) + 1 + 1, num_image_tokens)]
         text_tokens_null = [bos_id] + text_tokens_null + [boi_id] + [img_pad_id] * num_image_tokens + \
                            [eoi_id] + [eos_id] + [pad_id] * (max_text_len - len(text_tokens_null))
 
@@ -46,10 +46,7 @@ def prepare_gen_input(prompts, text_tokenizer, num_image_tokens, bos_id, eos_id,
         batch_modality_positions_null.append(modality_positions_null)
 
     batch_text_tokens = torch.stack(batch_text_tokens, dim=0).to(device)
-    batch_modality_positions = torch.stack(batch_modality_positions, dim=0).to(device)
-
     batch_text_tokens_null = torch.stack(batch_text_tokens_null, dim=0).to(device)
-    batch_modality_positions_null = torch.stack(batch_modality_positions_null, dim=0).to(device)
 
     return batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null
 
@@ -61,11 +58,11 @@ def prepare_mixed_modal_gen_input(prompts, nulls, text_tokenizer, num_image_toke
     batch_modality_positions_null = []
     for prompt, null in zip(prompts, nulls):
         text_tokens = text_tokenizer(prompt, add_special_tokens=False).input_ids
-        modality_positions = torch.tensor([len(text_tokens) + 1 + 1, num_image_tokens]).unsqueeze(0)
+        modality_positions = [(len(text_tokens) + 1 + 1, num_image_tokens)]
         text_tokens = [bos_id] + text_tokens + [boi_id] + [img_pad_id] * num_image_tokens + [eoi_id]
 
         text_tokens_null = text_tokenizer(null, add_special_tokens=False).input_ids
-        modality_positions_null = torch.tensor([len(text_tokens_null) + 1 + 1, num_image_tokens]).unsqueeze(0)
+        modality_positions_null = [(len(text_tokens_null) + 1 + 1, num_image_tokens)]
         text_tokens_null = [bos_id] + text_tokens_null + [boi_id] + [img_pad_id] * num_image_tokens + [eoi_id]
 
         len_a = len(text_tokens)
@@ -89,15 +86,10 @@ def prepare_mixed_modal_gen_input(prompts, nulls, text_tokenizer, num_image_toke
         batch_modality_positions_null.append(modality_positions_null)
 
     batch_text_tokens = torch.stack(batch_text_tokens, dim=0).to(device)
-    batch_modality_positions = torch.stack(batch_modality_positions, dim=0).to(device)
 
     batch_text_tokens_null = torch.stack(batch_text_tokens_null, dim=0).to(device)
-    batch_modality_positions_null = torch.stack(batch_modality_positions_null, dim=0).to(device)
 
     return batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null
-
-
-# def prepare_mixed_modal_gen_input(prompt, text_tokenizer, num_image_tokens, boi_id, eoi_id, img_pad_id, pad_id, device):
 #     text_tokens = text_tokenizer(prompt, add_special_tokens=False).input_ids
 #
 #     modality_positions = torch.Tensor([[len(text_tokens), num_image_tokens]]).long().unsqueeze(0)

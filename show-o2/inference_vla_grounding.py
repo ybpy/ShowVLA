@@ -77,7 +77,10 @@ if __name__ == '__main__':
 
     # Initialize Show-o model
     use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
-    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
+    pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False
+    pred_mobile_act = config.model.showo.get('pred_mobile_act', False)
+    if pred_mobile_act:
+        assert pred_act, "pred_mobile_act=True requires pred_act=True"
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
@@ -155,6 +158,9 @@ if __name__ == '__main__':
                 "action_decoder",
                 "soft_prompt_hub",
             ]
+            if pred_mobile_act:
+                modules_to_save.append("mobile_norm")
+                modules_to_save.append("mobile_decoder")
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
                 continue
@@ -241,7 +247,7 @@ if __name__ == '__main__':
         else:
             dataloader = DataLoader(dataset, batch_size=batch_size,
                                             sampler=None, collate_fn=collate_fn,
-                                            shuffle=True, num_workers=dataset_config.num_workers,
+                                            shuffle=False, num_workers=dataset_config.num_workers,
                                             drop_last=True,
                                             pin_memory=True,
                                             persistent_workers=True)
@@ -274,8 +280,7 @@ if __name__ == '__main__':
             num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
         )
         # 为 IterableDataset 设置分布式信息
-        if hasattr(robot_dataset, 'set_epoch'):
-            robot_dataset.set_epoch(0)
+        robot_dataset.set_process_info()
         train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
                                                                 config.training.batch_size_robot_grounding,
                                                                 robot_dataset.collate_fn)
@@ -285,8 +290,6 @@ if __name__ == '__main__':
 
     mixed_loader = MixedDataLoader(
         loader_list=loader_list,
-        samp_probs=config.dataset.samp_probs,
-        accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
     )
 
@@ -339,13 +342,14 @@ if __name__ == '__main__':
 
         text_masks = batch['text_masks'].to(device)
         image_masks = batch['image_masks'].to(device)
-        modality_positions = batch['modality_positions'].to(device)
+        modality_positions_batch = batch['modality_positions']
 
-        for text, text_tokens, pixel_values, text_masks, image_masks, modality_positions in zip(
-            texts, torch.split(text_tokens, 1), torch.split(pixel_values, 1), torch.split(text_masks, 1), torch.split(image_masks, 1), torch.split(modality_positions, 1),
+        for text, text_tokens, pixel_values, text_masks, image_masks, mp in zip(
+            texts, torch.split(text_tokens, 1), torch.split(pixel_values, 1), torch.split(text_masks, 1), torch.split(image_masks, 1), modality_positions_batch,
         ):
             assert text_tokens.size(0) == 1
             print(f"\nsample_idx: {sample_idx}")
+            modality_positions = [mp]
             
             image_latents, t_img = prepare_image_latents(pixel_values)
             

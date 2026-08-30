@@ -22,16 +22,23 @@ DATA_WEIGHTS = {
     "libero_goal": 0.1,
     "libero_10": 0.17,
     "libero_90": 0.2,
-    "Calvin": 0.3,
-    "JAKA": 0.35,
+    "Calvin": 0.15,
+    "JAKA": 0.325,
     "JAKA_clutter": 0.1,
+    "Lumi-mobile": 0.125,
+    "Bridge": 0.325,
 
     "robomind-franka": 0.1,
     "robomind-ur": 0.1,
-    "Droid-Left": 0.15,
-    "Droid-Right": 0.15,
-    "AGIBOT": 0.4,
-    "robomind-agilex": 0.07,
+    # "Droid-Left": 0.15,
+    # "Droid-Right": 0.15,
+    "Droid-Left": 0.25,
+    "Droid-Right": 0.25,
+    # "AGIBOT": 0.4,
+    "AGIBOT-HDF5-Sim": 0.05,
+    "AGIBOT-HDF5-Real": 0.125,
+    # "robomind-agilex": 0.07,
+    "robomind-agilex": 0.15,
     "robomind-franka-dual": 0.03,
     
     
@@ -56,6 +63,10 @@ DATA_DOMAIN_ID = {
     "libero_90": 3,
     "JAKA": 29,
     "JAKA_clutter": 29,
+    "Lumi-mobile": 28,
+
+    "AGIBOT-HDF5-Sim": 9,
+    "AGIBOT-HDF5-Real": 9,
     
     # ft
     "Bridge": 0,

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import os
 import json
 import logging
@@ -253,10 +254,8 @@ def main():
             source_prefix=config.model.showo.get('source_prefix', 'transformer'),
             target_prefix=config.model.showo.get('target_prefix', None),
         )
-        if not success:
-            logger.error("Failed to load XVLA modules! Please check:")
-        else:
-            logger.info("XVLA action modules loaded successfully!")
+        assert success, "Failed to load XVLA modules! Please check:"
+        logger.info("XVLA action modules loaded successfully!")
 
     use_lora = config.training.get('use_lora', False)
     lr_multipler = config.training.get('lr_multipler', 1.0) if use_lora else 1.0
@@ -473,7 +472,7 @@ def main():
     num_future_imgs = config.xvla.num_future_imgs if 'num_future_imgs' in config.xvla else 1
     given_freq = config.xvla.given_freq if 'given_freq' in config.xvla else None
     xvla_loader = create_dataloader(
-        num_workers=3, # dataset_config.num_workers
+        num_workers=4, # dataset_config.num_workers
         batch_size=config.training.batch_size_vla,
         metas_path=config.training.train_metas_path,
         num_actions=config.xvla.num_actions,
@@ -551,9 +550,8 @@ def main():
             num_samples_per_video=config.training.get('robot_grounding_num_samples_per_video', 4),
         )
         # 为 IterableDataset 设置分布式信息
-        if hasattr(robot_dataset, 'set_epoch'):
-            robot_dataset.set_epoch(0, accelerator.num_processes, accelerator.process_index)
-            
+        robot_dataset.set_process_info(accelerator.num_processes, accelerator.process_index)
+
         train_dataloader_robot_grounding = create_grounding_dataloader(robot_dataset,
                                                                 config.training.batch_size_robot_grounding,
                                                                 robot_dataset.collate_fn)
@@ -579,8 +577,6 @@ def main():
     # Combine these dataloaders into a single iterable
     mixed_loader = MixedDataLoader(
         loader_list=loader_list,
-        samp_probs=config.dataset.samp_probs,
-        accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
     )
 
@@ -724,7 +720,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -775,7 +771,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -807,9 +803,6 @@ def main():
             try:
                 iti_robot_batch = next(iti_robot_iter)
             except StopIteration:
-                # 在重新迭代时更新随机种子
-                if hasattr(iti_robot_iter._dataset, 'set_epoch'):
-                    iti_robot_iter._dataset.set_epoch(global_step + 1, accelerator.num_processes, accelerator.process_index)
                 iti_robot_iter = iter(train_dataloader_robot_grounding)
                 iti_robot_batch = next(iti_robot_iter)
             grounding_batches.append(iti_robot_batch)
@@ -822,11 +815,11 @@ def main():
             pixel_values = batch['images'].to(accelerator.device).to(weight_type)
 
             image_masks = batch['image_masks'].to(accelerator.device)
-            modality_positions = batch['modality_positions'].to(accelerator.device)
+            modality_positions = batch['modality_positions']
             if pred_act:
                 actions = batch['action'].to(accelerator.device).to(weight_type)
                 proprio = batch['proprio'].to(accelerator.device).to(weight_type)
-                action_positions = batch['action_positions'].to(accelerator.device)
+                action_positions = batch['action_positions']
                 domain_id = batch['domain_id'].to(accelerator.device)
                 action_labels = actions.clone().to(accelerator.device)
                 t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
@@ -847,8 +840,9 @@ def main():
                 g_text_tokens = torch.cat([gb['text_tokens'].to(accelerator.device) for gb in grounding_batches], dim=0)
                 g_pixel_values = torch.cat([gb['images'].to(accelerator.device).to(weight_type) for gb in grounding_batches], dim=0)
                 g_image_masks = torch.cat([gb['image_masks'].to(accelerator.device) for gb in grounding_batches], dim=0)
-                g_modality_positions = torch.cat([gb['modality_positions'].to(accelerator.device) for gb in grounding_batches], dim=0)
-
+                g_modality_positions = []
+                for gb in grounding_batches:
+                    g_modality_positions.extend(gb['modality_positions'])
                 g_image_latents, g_t, g_image_labels, g_image_masks = prepare_latents_and_labels(
                     g_pixel_values,
                     g_image_masks,
@@ -856,7 +850,7 @@ def main():
                 )
 
                 text_tokens = torch.cat([text_tokens, g_text_tokens], dim=0)
-                modality_positions = torch.cat([modality_positions, g_modality_positions], dim=0)
+                modality_positions = modality_positions + g_modality_positions
                 image_latents = torch.cat([image_latents, g_image_latents], dim=0)
                 t = torch.cat([t, g_t], dim=0)
                 image_masks = torch.cat([image_masks, g_image_masks], dim=0)
@@ -1070,13 +1064,18 @@ def save_checkpoint(model, config, accelerator, global_step):
                     json.dump(unwrapped_model.config.to_dict(), f, indent=2)
         json.dump({"global_step": global_step}, (save_path / "metadata.json").open("w+"))
         logger.info(f"Saved state to {save_path}")
+        del state_dict
     else:
         # On non-main processes, still need to get state_dict for synchronization
         try:
-            _ = accelerator.get_state_dict(model)
+            state_dict = accelerator.get_state_dict(model)
+            del state_dict
         except (KeyError, AttributeError):
             pass  # Ignore errors on non-main processes
 
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

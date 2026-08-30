@@ -1,0 +1,2 @@
+python ade20k_data_convert.py --data_root /home/hyx/datasets/ADEChallengeData2016 --split_name training
+python ade20k_data_convert.py --data_root /home/hyx/datasets/ADEChallengeData2016 --split_name validation

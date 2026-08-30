@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import os
 import json
 import logging
@@ -170,6 +171,9 @@ def main():
     # Initialize Show-o model
     use_img_trans_field = config.model.showo.use_img_trans_field if 'use_img_trans_field' in config.model.showo else False
     pred_act = config.model.showo.pred_act if 'pred_act' in config.model.showo else False 
+    pred_mobile_act = config.model.showo.get('pred_mobile_act', False)
+    if pred_mobile_act:
+        assert pred_act, "pred_mobile_act=True requires pred_act=True"
     text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path],
@@ -192,6 +196,8 @@ def main():
             len_soft_prompts=config.model.showo.get('len_soft_prompts', 32),
             max_len_seq=config.model.showo.get('max_len_seq', 512),
             num_domains=config.model.showo.get('num_domains', 20),
+            pred_mobile_act=pred_mobile_act,
+            mobile_dim=config.model.showo.get('mobile_dim', 3),
         ).to(accelerator.device)
         if config.model.showo.llm_vocab_size != model.showo.vocab_size:
             logger.info(f"Resize LLM vocabulary from {model.showo.vocab_size} to {config.model.showo.llm_vocab_size}")
@@ -240,10 +246,8 @@ def main():
             source_prefix=config.model.showo.get('source_prefix', 'transformer'),
             target_prefix=config.model.showo.get('target_prefix', None),
         )
-        if not success:
-            logger.error("Failed to load XVLA modules! Please check:")
-        else:
-            logger.info("XVLA action modules loaded successfully!")
+        assert success, "Failed to load XVLA modules! Please check:"
+        logger.info("XVLA action modules loaded successfully!")
 
     use_lora = config.training.get('use_lora', False)
     lr_multipler = config.training.get('lr_multipler', 1.0) if use_lora else 1.0
@@ -267,12 +271,16 @@ def main():
             modules_to_save = [
                 "project_xvla_encode",
                 "project_xvla_decode",
+                "project_xvla_vlm",
                 "pos_emb",
                 "norm",
                 "action_encoder",
                 "action_decoder",
                 "soft_prompt_hub",
             ]
+            if pred_mobile_act:
+                modules_to_save.append("mobile_norm")
+                modules_to_save.append("mobile_decoder")
         for name, module in model.named_modules():
             if isinstance(module, torch.nn.ModuleList) or isinstance(module, torch.nn.Sequential):
                 continue
@@ -346,9 +354,9 @@ def main():
             "lr": optimizer_config.learning_rate_showo_expert * lr_multipler
         },
         {
-            "name": "Action (pos_emb/norm/action_encoder/action_decoder)",
+            "name": "Action (pos_emb/norm/action_encoder/action_decoder/mobile_norm/mobile_decoder)",
             "filter": lambda n, p: ((
-                'pos_emb' in n or 'norm' == n.split('.')[xval_norm_name_index] or 'action_encoder' in n or 'action_decoder' in n or 'blocks' in n) and p.requires_grad),
+                'pos_emb' in n or 'norm' == n.split('.')[xval_norm_name_index] or 'action_encoder' in n or 'action_decoder' in n or 'mobile_norm' in n or 'mobile_decoder' in n or 'blocks' in n) and p.requires_grad),
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_act
         },
@@ -619,7 +627,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -670,7 +678,7 @@ def main():
                     assert j == 0, f"Only the first image is observation"
                     assert t == 1.0, f"The observation image should not be noisy"
                     # Do not calcuate the generation loss for the observation image
-                    img_sid, length = modality_positions[i, j]
+                    img_sid, length = modality_positions[i][j]
                     masks[i, img_sid: img_sid + length] = 0
 
         t = torch.stack(t_list, dim=0).squeeze(-1)
@@ -687,6 +695,8 @@ def main():
     # Initialize loss meters for logging
     loss_flow_m = AverageMeter()
     loss_action_m = AverageMeter()
+    loss_mobile_m = AverageMeter()
+    mobile_act_coeff = config.training.get('mobile_act_coeff', 1.0)
 
     model.train()
     for batch in mixed_loader:
@@ -698,14 +708,17 @@ def main():
             pixel_values = batch['images'].to(accelerator.device).to(weight_type)
 
             image_masks = batch['image_masks'].to(accelerator.device)
-            modality_positions = batch['modality_positions'].to(accelerator.device)
+            modality_positions = batch['modality_positions']
             if pred_act:
                 actions = batch['action'].to(accelerator.device).to(weight_type)
                 proprio = batch['proprio'].to(accelerator.device).to(weight_type)
-                action_positions = batch['action_positions'].to(accelerator.device)
+                action_positions = batch['action_positions']
                 domain_id = batch['domain_id'].to(accelerator.device)
                 action_labels = actions.clone().to(accelerator.device)
                 t_action = (torch.rand(1, device=actions.device) + torch.arange(text_tokens.shape[0], device=actions.device) / text_tokens.shape[0]) % (1 - 1e-5)
+                if pred_mobile_act:
+                    agv_action = batch['agv_action'].to(accelerator.device).to(weight_type)
+                    agv_action_mask = batch['agv_action_mask'].to(accelerator.device)
             
             # prepare image latents and labels
             if num_future_imgs == 1:
@@ -746,16 +759,23 @@ def main():
                                                 action_labels=action_labels if pred_act else None,
                                                 action_positions=action_positions if pred_act else None,
                                                 t_action=t_action.to(weight_type) if pred_act else None,
+                                                agv_action=agv_action if pred_mobile_act else None,
+                                                agv_action_mask=agv_action_mask if pred_mobile_act else None,
                                                 )
 
             loss_flow_m.update(loss_flow.item())
 
             # loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow
             if pred_act:
+                if pred_mobile_act:
+                    loss_mobile = action_loss_dict.pop('mobile_loss')
+                    loss_mobile_m.update(loss_mobile.item())
                 loss_action = sum(action_loss_dict.values())
                 loss_action_m.update(loss_action.item())
 
                 loss = config.training.flow_coeff * loss_flow + config.training.action_coeff * loss_action
+                if pred_mobile_act:
+                    loss = loss + mobile_act_coeff * loss_mobile
             else:
                 loss = config.training.flow_coeff * loss_flow
 
@@ -779,6 +799,8 @@ def main():
                 Loss_flow = accelerator.gather(torch.tensor(loss_flow_m.avg, dtype=weight_type, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
                 if pred_act:
                     Loss_action = accelerator.gather(torch.tensor(loss_action_m.avg, dtype=weight_type, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
+                if pred_mobile_act:
+                    Loss_mobile = accelerator.gather(torch.tensor(loss_mobile_m.avg, dtype=weight_type, device=accelerator.device).repeat(total_batch_size_per_gpu)).mean().item()
                 
                 lr = [group["lr"] for group in optimizer.param_groups]
                 if len(lr) >= 6:
@@ -795,6 +817,8 @@ def main():
                             "lr_soft_prompt": lr[-2],
                             "lr_project_xvla": lr[-1],
                         })
+                    if pred_mobile_act:
+                        logs["Loss_mobile"] = Loss_mobile
                     accelerator.log(logs, step=global_step + 1)
                     logger.info(
                         f"Step:{global_step + 1} "
@@ -810,6 +834,8 @@ def main():
                             f"LR_soft_prompt: {lr[-2]:.2e} "
                             f"LR_project_xvla: {lr[-1]:.2e} "
                         )
+                    if pred_mobile_act:
+                        logger.info(f"Loss_mobile: {Loss_mobile:0.4f}")
                 else:
                     logs = {
                         "Loss_flow": Loss_flow,
@@ -827,6 +853,7 @@ def main():
                     )
                 loss_flow_m.reset()
                 loss_action_m.reset()
+                loss_mobile_m.reset()
 
             # Save model checkpoint
             if (global_step + 1) % config.experiment.save_every == 0:
@@ -928,13 +955,18 @@ def save_checkpoint(model, config, accelerator, global_step):
                     json.dump(unwrapped_model.config.to_dict(), f, indent=2)
         json.dump({"global_step": global_step}, (save_path / "metadata.json").open("w+"))
         logger.info(f"Saved state to {save_path}")
+        del state_dict
     else:
         # On non-main processes, still need to get state_dict for synchronization
         try:
-            _ = accelerator.get_state_dict(model)
+            state_dict = accelerator.get_state_dict(model)
+            del state_dict
         except (KeyError, AttributeError):
             pass  # Ignore errors on non-main processes
 
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

@@ -33,13 +33,12 @@ pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir --no-bin
 pip install deepspeed==0.17.1;
 pip install accelerate==1.12.0;
 pip install timm==1.0.15;
-pip install huggingface-hub==0.36.0;
+pip install huggingface-hub;
 pip install onnxruntime==1.20.1;
-pip install dill==0.3.8;
-pip install pandas==2.2.3;
-pip install pyarrow==20.0.0;
+pip install "dill>=0.3.8";
+pip install "pandas>=2.2.3";
+pip install "pyarrow>=20.0.0";
 pip install av==15.0.0;
-pip install moviepy==1.0.3;
 pip install jsonlines==4.0.0;
 
 pip install pycocotools
@@ -48,7 +47,7 @@ pip install fastapi
 pip install peft==0.17.1
 pip install uvicorn==0.34.3
 pip install json_numpy==2.1.0
-pip install safetensors==0.5.3
+pip install safetensors
 pip install numpy==1.26.4
 pip install opencv-python==4.9.0.80
 pip install scipy==1.15.3
@@ -56,9 +55,11 @@ pip install mmengine==0.10.5
 pip install h5py==3.13.0
 pip install mediapy==1.2.4
 
+# 模型量化（可选）
 pip install bitsandbytes
 pip install lion_pytorch
 
+# LIBERO
 cd ../../
 git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
 cd LIBERO
@@ -72,4 +73,5 @@ pip install bddl==1.0.1
 pip install future==0.18.2
 pip install cloudpickle==3.1.1
 pip install gym==0.26.2
+pip install mujoco==3.3.2
 pip install -e .

@@ -158,13 +158,14 @@ class BaseHDF5Handler(DomainHandler):
         modality_positions.append((cur_len + 1, self.num_image_tokens))
         cur_len = cur_len + 1 + self.num_image_tokens + 1  # +2 to include <|img_start|> and <|img_end|>
         
-        # Language commmand
+        # Language command
         if text.endswith('.'):
             text = text + suffix
-        elif text[-1].isalpha():
+        elif text[-1].isalpha() or text[-1].isdigit():
             text = text + '.' + suffix
         else:
-            raise ValueError(f"Unsupported Language Instruction: {text}")
+            # raise ValueError(f"Unsupported Language Instruction: {text}")
+            text = text + suffix
         
         lang_tokens = self.text_tokenizer(text, add_special_tokens=False, truncation=False).input_ids
         text_tokens.extend(lang_tokens)
@@ -182,13 +183,11 @@ class BaseHDF5Handler(DomainHandler):
         text_labels = [-100] + text_labels + [self.eos_id]
         text_tokens = [self.bos_id] + text_tokens + [self.eos_id]
 
-        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
+        assert len(text_tokens) == len(text_labels) <= self.max_seq_len, f"text: {text}, len(text_tokens): {len(text_tokens)}, len(text_labels): {len(text_labels)}, self.max_seq_len: {self.max_seq_len}"
         text_labels = text_labels + [-100] * (self.max_seq_len - len(text_labels))
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
-
-        modality_positions = torch.tensor(modality_positions)
 
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -214,10 +213,11 @@ class BaseHDF5Handler(DomainHandler):
         # Language command
         if text.endswith('.'):
             text = text + suffix
-        elif text[-1].isalpha():
+        elif text[-1].isalpha() or text[-1].isdigit():
             text = text + '.' + suffix
         else:
-            raise ValueError(f"Unsupported Language Instruction: {text}")
+            # raise ValueError(f"Unsupported Language Instruction: {text}")
+            text = text + suffix
         
         lang_tokens = self.text_tokenizer(text, add_special_tokens=False, truncation=False).input_ids
         text_tokens.extend(lang_tokens)
@@ -252,9 +252,6 @@ class BaseHDF5Handler(DomainHandler):
         text_tokens = text_tokens + [self.pad_id] * (self.max_seq_len - len(text_tokens))
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
-
-        modality_positions = torch.tensor(modality_positions)
-        action_positions = torch.tensor(action_positions)
 
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.act_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
@@ -294,7 +291,18 @@ class BaseHDF5Handler(DomainHandler):
 
             # Domain-specific kinematics and timing
             left, right, lt, rt, freq, qdur_max, qdur_min = self.build_left_right(f)
-        
+
+            if 'is_mobile' in self.meta and self.meta["is_mobile"] == True:
+                agv_speed, mobile_dim_mask = self.build_mobile(f)  # [T,3], [3]
+            else:
+                agv_speed = np.zeros((left.shape[0], 3), dtype=np.float64)
+                mobile_dim_mask = np.array([False, False, False])
+
+            assert agv_speed.shape[0] == left.shape[0] and agv_speed.shape[-1] == 3, (
+                f"agv_speed shape {agv_speed.shape} vs left T={left.shape[0]}"
+            )
+            assert np.asarray(mobile_dim_mask).shape == (3,), mobile_dim_mask
+            
         if given_freq:
             freq = given_freq
 
@@ -310,7 +318,10 @@ class BaseHDF5Handler(DomainHandler):
         # Interpolators; clamp to endpoints
         L = interp1d(lt, left, axis=0, bounds_error=False, fill_value=(left[0], left[-1]))
         R = interp1d(rt, right, axis=0, bounds_error=False, fill_value=(right[0], right[-1]))
+        # AGV speeds share the left-arm time base (same episode length T).
+        A = interp1d(lt, agv_speed, axis=0, bounds_error=False, fill_value=(agv_speed[0], agv_speed[-1]))
         ref = (lt + rt) / 2.0
+        mobile_dim_mask_t = torch.as_tensor(mobile_dim_mask, dtype=torch.bool)  # [3]
 
         V = min(self.num_views, len(images))
         assert V == 1
@@ -328,9 +339,16 @@ class BaseHDF5Handler(DomainHandler):
             q = np.linspace(cur, min(cur + qdur, float(ref.max())), num_actions + 1, dtype=np.float32)
             lseq = torch.tensor(L(q))
             rseq = torch.tensor(R(q))
+            agv_speed_seq = torch.tensor(A(q)).float()  # [num_actions+1, 3]
+            agv_action = agv_speed_seq[1:].clone()  # [num_actions, 3] = (vx, vy, angular)
 
-            # Skip static segments
-            if (lseq[1] - lseq[0]).abs().max() < 1e-5 and (rseq[1] - rseq[0]).abs().max() < 1e-5: continue
+            # Skip static segments (keep samples where AGV is moving even if arms are still)
+            arm_static = (lseq[1] - lseq[0]).abs().max() < 1e-5 and (rseq[1] - rseq[0]).abs().max() < 1e-5
+            if arm_static:
+                if not mobile_dim_mask_t.any():
+                    continue
+                if agv_action[:, mobile_dim_mask_t].abs().max() < 1e-5:
+                    continue
             
             # Language augmentation
             if training and lang_aug_map and ins in lang_aug_map:
@@ -355,6 +373,16 @@ class BaseHDF5Handler(DomainHandler):
 
             assert len(img_seqs) == 1
             image = img_seqs[0]
+            # Wrist view: bottom-right -> bottom-left.
+            # Layout matches combine_main_wrist_views: main (224,320) on top,
+            # wrist (112,160) originally at bottom-right with bottom-left zeros.
+            if any(x in self.meta["dataset_name"] for x in ["Calvin", "Droid-", "libero"]):
+                assert image.shape[-2:] == (336, 320), image.shape
+                main_h, wrist_w = 224, 160
+                bottom_left = image[:, :, main_h:, :wrist_w].clone()
+                bottom_right = image[:, :, main_h:, wrist_w:].clone()
+                image[:, :, main_h:, :wrist_w] = bottom_right
+                image[:, :, main_h:, wrist_w:] = bottom_left
             # print(f"tgt image.shape: {image.shape}", flush=True)
 
             if num_future_imgs == 1:
@@ -365,10 +393,16 @@ class BaseHDF5Handler(DomainHandler):
                 raise NotImplementedError
 
             if self.pred_act:
-                text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask = self.format_obs_text_future_action_seq(ins, suffix=prompt_suffix)
+                try:
+                    text_tokens, text_labels, modality_positions, action_positions, text_mask, image_mask, action_mask = self.format_obs_text_future_action_seq(ins, suffix=prompt_suffix)
+                except:
+                    print(f"Skipping datapath: {datapath}, text: {ins}", flush=True)
+                    break
                 yield {
                 "language_instruction": ins,
                 "abs_trajectory": torch.cat([lseq, rseq], -1).float(),
+                "agv_action": agv_action,
+                "agv_action_mask": mobile_dim_mask_t.clone(),  # [3], True = supervised DoF
                 'text_tokens': text_tokens,
                 'text_labels': text_labels,
                 'images': image,
@@ -379,7 +413,11 @@ class BaseHDF5Handler(DomainHandler):
                 'action_masks': action_mask,
                 }
             else: 
-                text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins, suffix=prompt_suffix)
+                try:
+                    text_tokens, text_labels, modality_positions, text_mask, image_mask = self.format_obs_text_future_seq(ins, suffix=prompt_suffix)
+                except:
+                    print(f"Skipping datapath: {datapath}, text: {ins}", flush=True)
+                    break
                 yield {
                 "language_instruction": ins,
                 "abs_trajectory": torch.cat([lseq, rseq], -1).float(),

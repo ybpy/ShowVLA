@@ -19,7 +19,6 @@ from __future__ import annotations
 from typing import Optional, Tuple, Iterable, Sequence, Any
 import numpy as np
 import h5py
-import random
 
 from ..utils import euler_to_rotate6d, quat_to_rotate6d
 from .base import BaseHDF5Handler
@@ -33,14 +32,14 @@ class CalvinHandler(BaseHDF5Handler):
     def build_left_right(
         self, f: h5py.File
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
-        freq, qdur = 30.0, 1.0
+        freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
         proprio = f["proprio"][()]  # [T,7]
         left = np.concatenate(
             [proprio[:, :3], euler_to_rotate6d(proprio[:, 3:6], "xyz"), proprio[:, -1:] < 0.],
             axis=-1,
         )  # [T,10]
         right = np.zeros_like(left)
-        return left, right, None, None, freq, qdur
+        return left, right, None, None, freq, qdur_max, qdur_min
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         return range(0, max(0, T_left - 20))
@@ -80,7 +79,8 @@ class BridgeHandler(BaseHDF5Handler):
     def build_left_right(
         self, f: h5py.File
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray], float, float]:
-        freq, qdur = 5.0, 5.0
+        # freq, qdur = 5.0, 5.0
+        freq, qdur_max, qdur_min = 24.0, 0.5, 0.25
         proprio = f["proprio"][()]                     # [T, >=6]
         action  = f["action"][()]                      # [T, ...]
         left = np.concatenate(
@@ -88,7 +88,7 @@ class BridgeHandler(BaseHDF5Handler):
             axis=-1,
         )
         right = np.zeros_like(left)
-        return left, right, None, None, freq, qdur
+        return left, right, None, None, freq, qdur_max, qdur_min
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         return range(0, max(0, T_left - 10))
@@ -121,11 +121,8 @@ class LiberoHandler(BaseHDF5Handler):
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         # return range(0, max(0, T_left - 10))
         candidates = list(range(0, max(0, T_left - 10)))
-        downsample_rate = 1
-        if T_left > 200:
-            downsample_rate = 2
-        n_keep = min(len(candidates), max(1, len(candidates) // downsample_rate))
-        return random.sample(candidates, n_keep)
+        n_keep = T_left // 2
+        return np.random.choice(candidates, size=n_keep, replace=False)
 
 
 # ------------------------------ VLABench -------------------------------------

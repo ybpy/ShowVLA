@@ -17,16 +17,18 @@ import collections
 import json
 import os
 import numpy as np
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import cv2
+from typing import Any, Dict, List, Optional
 from mmengine import fileio
 from PIL import Image
 
 import io
 import torch
+from torchvision.utils import save_image
 from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from torch.utils.data import Dataset
-from datasets_vla.utils import BBOX_COLORS, MASK_COLORS, try_get_img_with_bbox, get_img_with_segment_mask, get_img_with_segment_mask_ade20k
+from datasets_vla.utils import BBOX_COLORS, MASK_COLORS, get_img_with_segment_mask, get_img_with_segment_mask_ade20k
 
 
 class GroundingDataset(Dataset):
@@ -40,18 +42,18 @@ class GroundingDataset(Dataset):
             max_seq_len,
             image_size,
             num_image_tokens,
-            prob_bbox: float = 0.5,
+            vis_mode: str = "rand", # "bbox", "segment_mask", "combine", "rand"
             mask_color_weight: float = 0.5,
     ) -> None:
 
-        if fileio.isdir(metas_path):
-            meta_files = fileio.list_dir_or_file(metas_path, suffix=".json", recursive=True, list_dir=False)
-            root = metas_path
-        else: meta_files, root = [metas_path], ""
+        # if fileio.isdir(metas_path):
+        #     meta_files = fileio.list_dir_or_file(metas_path, suffix=".json", recursive=True, list_dir=False)
+        #     root = metas_path
+        # else: meta_files, root = metas_path, ""
 
         self.all_datalist = []
-        for file in meta_files:
-            with io.BytesIO(fileio.get(fileio.join_path(root, file))) as f: meta = json.load(f)
+        for file in metas_path:
+            with io.BytesIO(fileio.get(file)) as f: meta = json.load(f)
             dataset_name = meta['dataset_name']
             datalist = meta['datalist']
             print(f"== [{file}] Dataset {dataset_name} with {len(datalist)} images")
@@ -78,15 +80,15 @@ class GroundingDataset(Dataset):
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.)
         ]
         self.image_aug = transforms.Compose(self.image_aug)
-        
+
         self.image_transform = [
-            transforms.Resize((self.image_height, self.image_width), interpolation=InterpolationMode.BICUBIC),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
         ]
         self.image_transform = transforms.Compose(self.image_transform)
 
-        self.prob_bbox = prob_bbox
+        assert vis_mode in ("bbox", "segment_mask", "combine", "rand"), vis_mode
+        self.vis_mode = vis_mode
         self.bbox_colors = BBOX_COLORS
         self.mask_colors = MASK_COLORS
         self.mask_color_weight = mask_color_weight
@@ -127,8 +129,6 @@ class GroundingDataset(Dataset):
         text_tokens = torch.tensor(text_tokens)
         text_labels = torch.tensor(text_labels)
 
-        modality_positions = torch.tensor(modality_positions)
-
         text_mask = torch.where((text_tokens != self.img_pad_id) & (text_tokens != self.pad_id),
                                 torch.ones_like(text_tokens), torch.zeros_like(text_tokens))
         image_mask = torch.where(text_tokens == self.img_pad_id,
@@ -138,6 +138,82 @@ class GroundingDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.all_datalist)
+
+    def try_get_resized_img_with_bbox(self, img, instances, color, ensure_no_seg=False, max_num_bboxes=None):
+        img_w, img_h = img.size
+        
+        bboxes = []
+        for ann in instances:
+            if ann.get("iscrowd", 0):
+                return None
+            segm = ann["segmentation"]
+            assert type(segm) == list
+            if ensure_no_seg and len(segm) > 1:
+                return None
+            
+            bbox = ann["bbox"]
+            bboxes.append(bbox)
+        
+        if max_num_bboxes is not None and len(bboxes) > max_num_bboxes:
+            return None
+
+        # Resize and transfer to numpy array
+        tgt_img = np.array(img.resize((self.image_width, self.image_height)))
+
+        scale_x = self.image_width / img_w
+        scale_y = self.image_height / img_h
+
+        # draw all the bboxes on the image with the color
+        for bbox in bboxes:
+            x, y, w, h = bbox
+            x1, y1, x2, y2 = int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))
+            if w < 6:
+                x1 = max(0, x1-3)
+                x2 = min(img_w-1, x2+3)
+            if h < 6:
+                y1 = max(0, y1-3)
+                y2 = min(img_h-1, y2+3)
+
+            x1_ = int(round(x1 * scale_x))
+            y1_ = int(round(y1 * scale_y))
+            x2_ = int(round(x2 * scale_x))
+            y2_ = int(round(y2 * scale_y))
+            x1_ = max(0, min(self.image_width - 1, x1_))
+            y1_ = max(0, min(self.image_height - 1, y1_))
+            x2_ = max(0, min(self.image_width - 1, x2_))
+            y2_ = max(0, min(self.image_height - 1, y2_))
+            cv2.rectangle(tgt_img, (x1_, y1_), (x2_, y2_), color, 2)
+        
+        return Image.fromarray(tgt_img)
+
+    def _get_coco_lvis_visualized_image(self, img, img_h, img_w, instances, category, force_comb=False, ensure_no_seg=False, max_num_bboxes=None):
+        if force_comb:
+            mode = "combine"
+        elif self.vis_mode == "rand":
+            mode = np.random.choice(["bbox", "segment_mask"])
+            # mode = np.random.choice(["bbox", "segment_mask", "combine"])
+        else:
+            mode = self.vis_mode
+        color_name = np.random.choice(list(self.mask_colors.keys()))
+        bbox_color_rgb = self.bbox_colors[color_name]
+        mask_color_rgb = self.mask_colors[color_name]
+
+        if mode == "bbox":
+            tgt_img = self.try_get_resized_img_with_bbox(img, instances, bbox_color_rgb, ensure_no_seg=ensure_no_seg, max_num_bboxes=max_num_bboxes)
+            if tgt_img is not None:
+                text = f"Mark all {category}(s) in the image with {color_name} bounding box. Image with marked {category}(s):"
+                return tgt_img, text
+
+        tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, mask_color_rgb, self.mask_color_weight)
+
+        if mode == "combine":
+            resized_tgt_img_with_bbox = self.try_get_resized_img_with_bbox(tgt_img, instances, bbox_color_rgb, ensure_no_seg=ensure_no_seg, max_num_bboxes=max_num_bboxes)
+            if resized_tgt_img_with_bbox is not None:
+                text = f"Mark with {color_name} bounding box and segment mask for all {category}(s) in the image:"
+                return resized_tgt_img_with_bbox, text
+
+        text = f"Segment all {category}(s) in the image with {color_name} mask. Image with segmented {category}(s):"
+        return tgt_img.resize((self.image_width, self.image_height)), text
 
     def __getitem__(self, idx: int) -> Optional[Dict[str, Any]]:
         dataset_name, json_path = self.all_datalist[idx]
@@ -150,25 +226,21 @@ class GroundingDataset(Dataset):
         img_h, img_w = data_dict["height"], data_dict["width"]
         assert img.size == (img_w, img_h), f"img.size {img.size} != ({img_w}, {img_h})"
 
-        if 'coco' in dataset_name.lower():
+        dataset_name_lower = dataset_name.lower()
+        if 'coco' in dataset_name_lower:
             category_2_instances = data_dict["anns"]
             category = np.random.choice(list(category_2_instances.keys()))
             instances = category_2_instances[category]
-            use_bbox = np.random.rand() < self.prob_bbox
-            if use_bbox:
-                bbox_color_name = np.random.choice(list(self.bbox_colors.keys()))
-                bbox_color_rgb = self.bbox_colors[bbox_color_name]
-                tgt_img = try_get_img_with_bbox(img, instances, bbox_color_rgb)
-                if tgt_img is None:
-                    use_bbox = False
-                else:
-                    text = f"Mark all {category}(s) in the image with {bbox_color_name} bounding box. Image with marked {category}(s):"
-            if not use_bbox:
-                mask_color_name = np.random.choice(list(self.mask_colors.keys()))
-                color = self.mask_colors[mask_color_name]
-                tgt_img = get_img_with_segment_mask(img, img_h, img_w, instances, color, self.mask_color_weight)
-                text = f"Segment all {category}(s) in the image with {mask_color_name} mask. Image with segmented {category}(s):"
-        elif 'ade20k' in dataset_name.lower():
+            tgt_img, text = self._get_coco_lvis_visualized_image(img, img_h, img_w, instances, category, ensure_no_seg=True, max_num_bboxes=8)
+            img = img.resize((self.image_width, self.image_height))
+        elif 'lvis' in dataset_name_lower:
+            category_2_instances = data_dict["anns"]
+            category = np.random.choice(list(category_2_instances.keys()))
+            instances = category_2_instances[category]
+            is_small = data_dict["is_small"][category]
+            tgt_img, text = self._get_coco_lvis_visualized_image(img, img_h, img_w, instances, category, force_comb=False)
+            img = img.resize((self.image_width, self.image_height))
+        elif 'ade20k' in dataset_name_lower:
             segm_path = data_dict["segm_path"]
             segm = Image.open(segm_path)
             assert segm.size == (img_w, img_h), f"segm.size {segm.size} != ({img_w}, {img_h})"
@@ -179,6 +251,8 @@ class GroundingDataset(Dataset):
             mask_color_name = np.random.choice(list(self.mask_colors.keys()))
             color = self.mask_colors[mask_color_name]
             tgt_img = get_img_with_segment_mask_ade20k(img, segm, cat_id, color, self.mask_color_weight)
+            img = img.resize((self.image_width, self.image_height))
+            tgt_img = tgt_img.resize((self.image_width, self.image_height))
             text = f"Segment instance(s) of {category} in the image with {mask_color_name} mask. Image with segmented {category}:"
         else:
             raise NotImplementedError(f"Unsupported grounding dataset: {dataset_name}")
@@ -212,7 +286,7 @@ class GroundingDataset(Dataset):
             for key, value in data.items():
                 batched[key].append(value)
         for key, value in batched.items():
-            if key not in ('language_instruction',):
+            if key not in ('language_instruction', 'modality_positions', 'action_positions'):
                 batched[key] = torch.stack(value, dim=0)
         return batched
 
@@ -223,30 +297,46 @@ if __name__ == '__main__':
     from models.misc import get_text_tokenizer
 
     text_tokenizer, showo_token_ids = get_text_tokenizer(
-        # "meta-llama/Meta-Llama-3-8B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",
         add_showo_tokens=True,
         return_showo_token_ids=True,
-        # llm_name="llama3"
         llm_name="qwen2_5"
     )
 
+    metas_path = [
+        # "./meta_grounding_data/coco/coco_train2017_meta.json",
+        # "./meta_grounding_data/coco/coco_val2017_meta.json",
+        "./meta_grounding_data/lvis/lvis_train2017_meta.json",
+        "./meta_grounding_data/lvis/lvis_val2017_meta.json",
+        "./meta_grounding_data/ade20k/ade20k_training_meta.json",
+        "./meta_grounding_data/ade20k/ade20k_validation_meta.json",
+    ]
+
     dataset = GroundingDataset(
-        metas_path="./meta_grounding_data/ade20k",
+        metas_path=metas_path,
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
-        max_seq_len=872,
+        max_seq_len=880,
         image_size=(336, 320),
         num_image_tokens=420+1,
-        prob_bbox=0.5,
     )
     train_dataloader_img_edit = DataLoader(dataset, batch_size=8, collate_fn=dataset.collate_fn,
-                                      shuffle=False, num_workers=0)
+                                      shuffle=True, num_workers=0)
 
+    save_dir = "./vis_grounding_dataset"
+    os.makedirs(save_dir, exist_ok=True)
 
     for i, data in enumerate(train_dataloader_img_edit):
         print(f"[BATCH {i}]")
         print("text_tokens", data['text_tokens'].shape)
         print("images", data['images'].shape)
         print(data['modality_positions'][0])
+
+        images = data['images']
+        texts = data['language_instruction']
+        for j in range(images.shape[0]):
+            sample_prefix = os.path.join(save_dir, f"batch_{i:04d}_sample_{j:02d}_{texts[j]}")
+            save_image(images[j], f"{sample_prefix}.jpg", nrow=2, normalize=True, value_range=(-1, 1))
+
+        print(f"saved images to {save_dir}")
         print()

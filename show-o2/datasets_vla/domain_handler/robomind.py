@@ -49,21 +49,23 @@ class RobomindHandler(BaseHDF5Handler):
 
         if ds_name in ("robomind-franka", "robomind-ur"):
             # Single arm; right is dummy zeros.
-            freq, qdur = 30.0, 4.0
+            # freq, qdur = 30.0, 4.0
+            freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
             ee = f["puppet"]["end_effector"][()]              # [T,6]
             grip = f["puppet"]["joint_position"][:, -1:]      # [T,1], 1->closed, 0->open
             left = np.concatenate([ee[:, :3], euler_to_rotate6d(ee[:, 3:6], "xyz"), grip], axis=-1)  # [T,10]
             right = np.zeros_like(left)
-            return left, right, None, None, freq, qdur
+            return left, right, None, None, freq, qdur_max, qdur_min
 
         if ds_name == "robomind-agilex":
             # Dual arms; threshold raw gripper (>2.5 => closed).
-            freq, qdur = 30.0, 4.0
+            # freq, qdur = 30.0, 4.0
+            freq, qdur_max, qdur_min = 30.0, 1.0, 0.5
             le = f["puppet"]["end_effector_left"][()]         # [..., >=6]
             re = f["puppet"]["end_effector_right"][()]
             l = np.concatenate([le[:, :3], euler_to_rotate6d(le[:, 3:6], "xyz"), (le[:, -1:] > 2.5)], axis=-1)
             r = np.concatenate([re[:, :3], euler_to_rotate6d(re[:, 3:6], "xyz"), (re[:, -1:] > 2.5)], axis=-1)
-            return l, r, None, None, freq, qdur
+            return l, r, None, None, freq, qdur_max, qdur_min
 
         if ds_name == "robomind-franka-dual":
             # Packed dual ee; grippers from joint_position indices.
@@ -78,4 +80,10 @@ class RobomindHandler(BaseHDF5Handler):
 
     def index_candidates(self, T_left: int, training: bool) -> Iterable[int]:
         # Leave margin for the future window; 30 frames at 30Hz ≈ 1s.
-        return range(0, max(0, T_left - 30))
+        # return range(0, max(0, T_left - 30))
+        candidates = list(range(0, max(0, T_left - 18)))
+        if T_left < 200:
+            return candidates
+        else:
+            n_keep = T_left // 3
+            return np.random.choice(candidates, size=n_keep, replace=False)

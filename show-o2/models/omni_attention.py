@@ -38,7 +38,10 @@ def modality(offset, length):
 
 # code is borrowed from https://github.com/lucidrains/transfusion-pytorch
 def omni_attn_mask(modalities):
-    modalities = modalities.long()
+    if not isinstance(modalities, torch.Tensor):
+        modalities = torch.tensor(modalities, dtype=torch.long)
+    else:
+        modalities = modalities.long()
 
     def mask_mod(b, h, q_idx, kv_idx):
         mask = causal(b, h, q_idx, kv_idx)
@@ -57,13 +60,15 @@ def omni_attn_mask_naive(B, LEN, modalities, device, inverted=True, actions=None
     attention_mask = torch.tril(torch.ones((B, 1, LEN, LEN), dtype=torch.long)).to(device)
     for b in range(B):
         modality_batch = modalities[b]
-        for offset, length in modality_batch:
+        for pos in modality_batch:
+            offset, length = int(pos[0]), int(pos[1])
             attention_mask[b, :, offset:offset + length, offset:offset + length] = 1
 
     if actions is not None:
         for b in range(B): 
             action_batch = actions[b] 
-            for offset, length in action_batch: 
+            for pos in action_batch: 
+                offset, length = int(pos[0]), int(pos[1])
                 attention_mask[b, :, offset:offset + length, offset:offset + length] = 1
 
     if inverted:
